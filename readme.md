@@ -1,7 +1,7 @@
 # 🤖 Lessan AI
 ### The Ultimate Cross-Platform Personal AI Assistant — By FatihMakes
 
-> 📺 **[Watch the full setup video on YouTube](https://youtu.be/ldvDNzwnM8k)**
+> 📺 **[Watch the full setup video on YouTube]()**
 
 A real-time voice AI that can hear, see, understand, and control your computer — on any OS. Supporting Windows, macOS, and Linux. Local execution. Zero subscriptions. Engineered for total autonomy.
 
@@ -93,5 +93,5 @@ Engineered by a developer building a real-world AI assistant.
 
 | Platform | Link |
 |---|---|
-| YouTube | [@FatihMakes](https://www.youtube.com/@FatihMakes) |
-| Instagram | [@fatihmakes](https://www.instagram.com/fatihmakes) |
+| YouTube | [@GilbertNgetich-o4m](http://www.youtube.com/@GilbertNgetich-o4m) |
+| Instagram | [@inginialessan](https://www.instagram.com/inginialessan?igsh=MXBibDZueGJmYWlzbg==) |
