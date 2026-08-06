@@ -1,0 +1,21 @@
+Architectures: amd64
+Date: Thu, 06 Aug 2026 08:42:44 +0000
+Label: Lessan AI
+Origin: Lessan AI
+Suite: stable
+MD5Sum:
+ ab9a952174663e7bf345a39eddce5e81             1152 Packages
+ 70a1adcbc0e5073e4fa49f0a7d796d18              758 Packages.gz
+ 39ccaa72754f5b50dd93fd0cc2418192              108 Release
+SHA1:
+ 3289a14a472a78386098a5be7a6580cb8c552ab9             1152 Packages
+ 78b1491c7e1a95ef373fff12ab6fe24f2228f738              758 Packages.gz
+ 062c3cc3f59ed495e5684dfde86e76c4455debf9              108 Release
+SHA256:
+ 8365e1e0b87906f3293b3f3eb8d8dd57e33b9f91370bc2f8118e91efcb16278d             1152 Packages
+ 83a15f48ba88ff08735cc0e7c7d1f878e9f4ffe1b20abf54d43cbae7084c7b83              758 Packages.gz
+ 431ef6299c952ad9cd561e5b8adb76a99119c6da7a9e3b62f7ae19689c6ee5cd              108 Release
+SHA512:
+ 277c8cf264d3b8483f1113230a7282c95f8bee4d9526a9d6bef7ecbe0a4b15cb38dee5b751575d0fac3c29702485093ede07242cac6de868c0771e2800cfc699             1152 Packages
+ 8a1841a1d30b6710bd38bd26482bec51aaff7bcbb2eb7132a9f988d7a1396929c3af6ed9a9370267ffab74cb9326e4e2f70e1d184381e8d610d36757106aafec              758 Packages.gz
+ a00f35d84dbcc6af15ac970222e5f0aa0bed9a08818d9582add52ab8d30783d69c5642a68b9c213492eb2fdc9ac9cce010b0b19cc40e26ec94fafbe11f1564c1              108 Release

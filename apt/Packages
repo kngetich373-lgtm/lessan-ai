@@ -1,0 +1,21 @@
+Package: lessan-ai
+Architecture: amd64
+Version: 1.0.0-1
+Priority: optional
+Section: utils
+Maintainer: FatihMakes
+Depends: python3, python3-venv, python3-pip, python3-dev, python3-tk, python3-xlib, portaudio19-dev, libportaudio2, libasound2, libgl1, libglib2.0-0, libegl1, libxkbcommon-x11-0, libxcb-cursor0, libxss1, libxrandr2, libxtst6, libnotify-bin, xclip, xdotool, nmap, ffmpeg, xdg-utils
+Filename: ./lessan-ai_1.0.0-1_amd64.deb
+Size: 180136
+MD5sum: 077f9c4944fdeaa4ff6aa5e4349b8664
+SHA1: d797594a546724c8adfe4d8548aea2ac001e8d9b
+SHA256: ca16bad0acce8546af5546124ff798fb682f34d595bb20e667241e87d5ebc797
+SHA512: 14a911d3e858bf568488205ac58e8595e6d07a5ae494e23567a0d5b06d19142d3593d6d967ccfbdc00745e0e78fa877fc5019bf1f6560b3fd41ad9b16ea4ed7b
+Homepage: https://github.com/FatihMakes/lessan-ai
+Description: Lessan AI — The Ultimate Cross-Platform Personal AI Assistant
+ A real-time voice AI that can hear, see, understand, and control your
+ computer. Runs locally, uses free Gemini + OpenRouter API tiers.
+ .
+ Kali/Linux packaging of the Lessan AI assistant with a system venv,
+ Playwright Chromium, app-menu launcher and first-run data migration.
+
