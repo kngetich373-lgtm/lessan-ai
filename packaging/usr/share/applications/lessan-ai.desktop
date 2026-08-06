@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Lessan AI
+GenericName=Personal AI Assistant
+Comment=Real-time voice AI that can hear, see, understand, and control your computer
+Exec=/usr/bin/lessan-ai
+Icon=lessan-ai
+Terminal=false
+Categories=Utility;AudioVideo;Office;
+Keywords=ai;assistant;voice;automation;
+StartupNotify=true
+StartupWMClass=lessan-ai

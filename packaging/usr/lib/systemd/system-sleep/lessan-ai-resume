@@ -1,0 +1,24 @@
+#!/bin/bash
+# ============================================================
+#  /usr/lib/systemd/system-sleep/lessan-ai-resume
+#  Relaunches Lessan AI after the system wakes from suspend.
+#
+#  systemd runs every executable in /usr/lib/systemd/system-sleep
+#  with:  pre   suspend|hibernate|hybrid-sleep|suspend-then-hibernate
+#         post  suspend|hibernate|hybrid-sleep|suspend-then-hibernate
+# ============================================================
+
+LOG="/var/log/lessan-ai-install.log"
+
+case "$1" in
+    post)
+        # Relaunch as the desktop user (not root) so Lessan gets normal
+        # access to the session bus, sound server, and display.
+        DESKTOP_USER="$(stat -c '%U' /home/*/ 2>/dev/null | head -n1)"
+        [ -z "$DESKTOP_USER" ] && DESKTOP_USER="${SUDO_USER:-lessan}"
+
+        /usr/bin/runuser -u "$DESKTOP_USER" -- \
+            setsid nohup /usr/bin/lessan-ai >> "$LOG" 2>&1 < /dev/null &
+        ;;
+esac
+exit 0

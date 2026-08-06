@@ -1,0 +1,23 @@
+# ---- Secrets & personal data (NEVER commit) ----
+config/api_keys.json
+config/*.json
+!config/__init__.py
+memory/*.json
+reports/
+
+# ---- Build artifacts ----
+*.deb
+packaging/opt/lessan-ai/
+packaging/opt/
+
+# ---- Python ----
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# ---- Misc ----
+lessan.sh
+*.log
+.DS_Store

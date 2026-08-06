@@ -1,0 +1,103 @@
+#!/bin/bash
+# ============================================================
+#  /usr/bin/lessan-ai — Lessan AI launcher (Kali/Linux .deb)
+#
+#  /opt/lessan-ai is a ROOT-OWNED, read-only app bundle. The
+#  desktop user cannot write there, and memory/ + config/ are
+#  Python packages that cannot be symlinked away. So at launch
+#  we keep a writable private copy of the app in the user's
+#  data dir:
+#
+#      ~/.local/share/lessan/app
+#
+#  State (config/api_keys.json, memory/*.json, reports/) lives
+#  inside that copy. On first run, existing data from the old
+#  $HOME/Lessan layout is migrated over. When the package is
+#  upgraded (VERSION stamp changes), the app code is re-synced
+#  from /opt while the user's state is preserved.
+# ============================================================
+
+APP_DIR="/opt/lessan-ai"
+VENV_PY="$APP_DIR/.venv/bin/python"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/lessan"
+RUN_DIR="$DATA_HOME/app"
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/lessan"
+LOG="$LOG_DIR/lessan.log"
+VERSION_FILE="$APP_DIR/VERSION"
+RUN_VERSION="$RUN_DIR/.lessan-app-version"
+MIGRATED_FLAG="$DATA_HOME/.legacy_migrated"
+PW_BROWSERS="$APP_DIR/ms-playwright"
+
+# --- Desktop / session environment -------------------------------
+export DISPLAY="${DISPLAY:-:0}"
+export XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}"
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export PLAYWRIGHT_BROWSERS_PATH="$PW_BROWSERS"
+
+# Sound: pipewire/pulse user socket lives under $XDG_RUNTIME_DIR.
+if [ -z "$PULSE_SERVER" ] && [ -S "$XDG_RUNTIME_DIR/pulse/native" ]; then
+    export PULSE_SERVER="unix:$XDG_RUNTIME_DIR/pulse/native"
+fi
+
+# DBus session bus (needed for session integration).
+if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] && [ -S "$XDG_RUNTIME_DIR/bus" ]; then
+    export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+fi
+
+mkdir -p "$DATA_HOME" "$LOG_DIR"
+
+# --- Sync the writable app copy (first run or version bump) -------
+NEED_SYNC=0
+if [ ! -d "$RUN_DIR" ] || [ ! -f "$RUN_VERSION" ]; then
+    NEED_SYNC=1
+elif [ -f "$VERSION_FILE" ] && ! cmp -s "$VERSION_FILE" "$RUN_VERSION"; then
+    NEED_SYNC=1
+fi
+
+if [ "$NEED_SYNC" = "1" ]; then
+    echo "[lessan-ai] Syncing app copy to $RUN_DIR ($(date '+%Y-%m-%d %H:%M:%S'))" >> "$LOG"
+    mkdir -p "$RUN_DIR"
+    # --delete refreshes code; the excludes preserve user state.
+    rsync -a --delete \
+        --exclude 'config/*.json' \
+        --exclude 'memory/*.json' \
+        --exclude 'reports/' \
+        "$APP_DIR/" "$RUN_DIR/"
+    if [ -f "$VERSION_FILE" ]; then
+        cp -a "$VERSION_FILE" "$RUN_VERSION"
+    fi
+    # Seed a blank API-key template if none exists yet.
+    if [ ! -f "$RUN_DIR/config/api_keys.json" ] && [ -f "$APP_DIR/config/api_keys.json.dist" ]; then
+        cp -a "$APP_DIR/config/api_keys.json.dist" "$RUN_DIR/config/api_keys.json"
+    fi
+fi
+
+# --- Import state from the old $HOME/Lessan layout (once) ---------
+if [ ! -f "$MIGRATED_FLAG" ] && [ -d "$HOME/Lessan" ]; then
+    echo "[lessan-ai] Migrating data from $HOME/Lessan ..." >> "$LOG"
+    mkdir -p "$RUN_DIR/config" "$RUN_DIR/memory" "$RUN_DIR/reports"
+    if [ ! -f "$RUN_DIR/config/api_keys.json" ]; then
+        cp -a "$HOME/Lessan/config/api_keys.json" "$RUN_DIR/config/api_keys.json" 2>/dev/null || true
+    fi
+    # Copy legacy memory/reports state (never overwrite newer files).
+    rsync -a --ignore-existing "$HOME/Lessan/memory/" "$RUN_DIR/memory/" 2>/dev/null || true
+    rsync -a --ignore-existing "$HOME/Lessan/reports/" "$RUN_DIR/reports/" 2>/dev/null || true
+    find "$RUN_DIR/config" "$RUN_DIR/memory" "$RUN_DIR/reports" \
+        -type d -exec chmod u+rwx {} + -o -type f -exec chmod u+rw {} + 2>/dev/null || true
+    chmod -R u+rwX "$RUN_DIR/config" "$RUN_DIR/memory" "$RUN_DIR/reports"
+    touch "$MIGRATED_FLAG"
+    echo "[lessan-ai] Migration complete." >> "$LOG"
+fi
+
+mkdir -p "$RUN_DIR/config" "$RUN_DIR/memory" "$RUN_DIR/reports"
+
+# --- Already running? ---------------------------------------------
+if pgrep -f "$RUN_DIR/main.py" >/dev/null 2>&1; then
+    echo "[lessan-ai] Already running — skipping." | tee -a "$LOG"
+    exit 0
+fi
+
+# --- Launch -------------------------------------------------------
+cd "$RUN_DIR" || exit 1
+echo "[lessan-ai] Launching Lessan ($(date '+%Y-%m-%d %H:%M:%S'))" >> "$LOG"
+exec "$VENV_PY" "$RUN_DIR/main.py" "$@"

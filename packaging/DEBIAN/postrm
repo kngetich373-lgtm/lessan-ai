@@ -1,0 +1,42 @@
+#!/bin/bash
+# ============================================================
+#  postrm — Lessan AI .deb maintainer script
+#
+#  Called as:
+#    postrm              (after apt remove)
+#    postrm purge        (after apt remove --purge)
+#    upgrade | failed-upgrade | disappear
+#  User data is NEVER deleted here.
+# ============================================================
+set -e
+
+APP_DIR="/opt/lessan-ai"
+
+case "$1" in
+    remove | upgrade | failed-upgrade | disappear)
+        # Leave /opt/lessan-ai in place on plain removal so re-install is fast.
+        # Refresh the desktop icon cache so the menu entry disappears.
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q /usr/share/applications 2>/dev/null || true
+        fi
+        ;;
+    purge)
+        # purged — remove the package's files that postinst generated.
+        # config/, memory/, reports/ under the app dir are SYMLINKS created by
+        # the launcher pointing to ~/.local/share/lessan — we remove the links
+        # only, never the user's data dir contents.
+        if [ -L "$APP_DIR/config" ]; then rm -f "$APP_DIR/config"; fi
+        if [ -L "$APP_DIR/memory" ]; then rm -f "$APP_DIR/memory"; fi
+        if [ -L "$APP_DIR/reports" ]; then rm -f "$APP_DIR/reports"; fi
+
+        rm -rf "$APP_DIR/.venv"
+        rm -rf "$APP_DIR/ms-playwright"
+        rm -rf "$APP_DIR/.first_run_done"
+
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database -q /usr/share/applications 2>/dev/null || true
+        fi
+        ;;
+esac
+
+exit 0

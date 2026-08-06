@@ -1,0 +1,20 @@
+#!/bin/bash
+# ============================================================
+#  lessan-sleep-hook
+#  systemd sleep hook: launches Lessan after the laptop
+#  wakes/resumes from suspend (including lid close/open).
+#
+#  Install location: /etc/systemd/system-sleep/lessan-resume
+#  systemd runs every executable in that dir with:
+#      pre   suspend|hibernate|hybrid-sleep|suspend-then-hibernate
+#      post  suspend|hibernate|hybrid-sleep|suspend-then-hibernate
+# ============================================================
+
+case "$1" in
+    post)
+        # Run the launcher as the desktop user (not root) so Lessan
+        # gets normal access to the session bus, sound, and display.
+        /usr/bin/runuser -u lessan -- bash /home/lessan/Lessan/scripts/lessan-resume.sh &
+        ;;
+esac
+exit 0
