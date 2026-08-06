@@ -53,6 +53,21 @@ python main.py
 
 ---
 
+## 🐧 Kali Linux (APT Install)
+
+Lessan AI ships as a **signed apt repository** (GitHub Pages) plus a standalone `.deb`. To install with apt:
+
+```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo curl -fsSL https://kngetich373-lgtm.github.io/lessan-ai/apt/lessan-ai.gpg -o /etc/apt/keyrings/lessan-ai.gpg
+echo 'deb [signed-by=/etc/apt/keyrings/lessan-ai.gpg] https://kngetich373-lgtm.github.io/lessan-ai/apt ./' | sudo tee /etc/apt/sources.list.d/lessan-ai.list
+sudo apt update && sudo apt install lessan-ai
+```
+
+Full guide (first-run behavior, upgrades, security notes): **[INSTALL_KALI.md](INSTALL_KALI.md)**
+
+---
+
 ## 📋 Requirements
 
 | Requirement | Details |
