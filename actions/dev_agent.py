@@ -1,6 +1,7 @@
 import subprocess
 import sys
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -14,7 +15,8 @@ def get_base_dir():
 
 BASE_DIR         = get_base_dir()
 API_CONFIG_PATH  = BASE_DIR / "config" / "api_keys.json"
-PROJECTS_DIR     = Path.home() / "Desktop" / "JarvisProjects"
+# Where generated projects live. Override via the LESSAN_PROJECTS_DIR env var.
+PROJECTS_DIR     = Path(os.getenv("LESSAN_PROJECTS_DIR", str(Path.home() / "Lessan" / "projects")))
 MAX_FIX_ATTEMPTS = 5
 MODEL_PLANNER    = "gemini-2.5-flash"
 MODEL_WRITER     = "gemini-2.5-flash"
@@ -39,7 +41,71 @@ def _strip_fences(text: str) -> str:
 
 def _is_rate_limit(error: Exception) -> bool:
     msg = str(error).lower()
-    return "429" in msg or "quota" in msg or "resource_exhausted" in msg
+    return "429" in msg or "quota" in msg or "resource_exhausted" in msg or "rate limit" in msg
+
+
+# ── resilient LLM backend (free + fast in development) ────────────────
+#
+# Same contract as lessan_ai_agents.execution.llm_backend: the free
+# OpenRouter pool (omniroute.client) runs first by default so the Gemini
+# free-tier quota never blocks a build; Gemini is the last-resort
+# fallback and is skipped for a minute after a rate-limit hit.
+# Override the order with the LESSAN_LLM_BACKEND env var
+# (omniroute | gemini | auto).
+
+GEMINI_RATE_LIMIT_COOLDOWN = 60.0  # seconds
+_gemini_cooled_until: float = 0.0
+
+
+def _gemini_on_cooldown() -> bool:
+    return time.time() < _gemini_cooled_until
+
+
+def _call_gemini(prompt: str) -> str:
+    global _gemini_cooled_until
+    if _gemini_on_cooldown():
+        raise RateLimitError("Gemini is on rate-limit cooldown.")
+    model = _get_model(MODEL_PLANNER)
+    try:
+        return model.generate_content(prompt).text
+    except Exception as e:
+        if _is_rate_limit(e):
+            _gemini_cooled_until = time.time() + GEMINI_RATE_LIMIT_COOLDOWN
+            print(
+                "[DevAgent] ⚠️ Gemini rate-limited — cooling down "
+                f"{int(GEMINI_RATE_LIMIT_COOLDOWN)}s."
+            )
+            raise RateLimitError(str(e))
+        raise
+
+
+def _call_omniroute(prompt: str) -> str:
+    from omniroute import client as omni_client
+
+    return omni_client.chat(prompt)
+
+
+def _complete(prompt: str) -> str:
+    """Run a prompt through the resilient LLM backend.
+
+    Default (omniroute): free OpenRouter pool first, Gemini fallback.
+    ``auto``: Gemini first, OmniRoute fallback.
+    ``gemini``: Gemini only.
+    Raises ``RateLimitError`` only if every backend failed.
+    """
+    mode = os.getenv("LESSAN_LLM_BACKEND", "omniroute").strip().lower()
+    order = [_call_gemini, _call_omniroute] if mode == "auto" else [_call_omniroute, _call_gemini]
+
+    last_error: Exception | None = None
+    for fn in order:
+        try:
+            return fn(prompt)
+        except Exception as e:  # noqa: BLE001 — deliberate cross-backend fallback
+            last_error = e
+            print(f"[DevAgent] ⚠️ {fn.__name__} failed: {e}")
+
+    raise RateLimitError(str(last_error))
+
 
 
 def _parse_traceback(output: str, project_files: list[str]) -> tuple[str | None, int | None]:
@@ -97,8 +163,6 @@ class RateLimitError(Exception):
 
 
 def _plan_project(description: str, language: str) -> dict:
-    model = _get_model(MODEL_PLANNER)
-
     prompt = f"""You are a senior software architect. Create a minimal, complete file plan for this project.
 
 Language: {language}
@@ -135,15 +199,10 @@ Critical rules:
 JSON:"""
 
     try:
-        response = model.generate_content(prompt)
-        raw = _strip_fences(response.text)
+        raw = _strip_fences(_complete(prompt))
         return json.loads(raw)
     except json.JSONDecodeError as e:
-        raise ValueError(f"Planner returned invalid JSON: {e}\nRaw: {response.text[:300]}")
-    except Exception as e:
-        if _is_rate_limit(e):
-            raise RateLimitError(str(e))
-        raise
+        raise ValueError(f"Planner returned invalid JSON: {e}\nRaw: {raw[:300]}")
 
 def _write_file(
     file_info: dict,
@@ -153,8 +212,6 @@ def _write_file(
     project_dir: Path,
     already_written: dict[str, str],
 ) -> str:
-    model = _get_model(MODEL_WRITER)
-
     file_path = file_info["path"]
     file_desc = file_info.get("description", "")
     file_imports = file_info.get("imports", [])
@@ -214,8 +271,7 @@ General rules:
 Code for {file_path}:"""
 
     try:
-        response = model.generate_content(prompt)
-        code = _strip_fences(response.text)
+        code = _strip_fences(_complete(prompt))
 
         full_path = project_dir / file_path
         full_path.parent.mkdir(parents=True, exist_ok=True)
@@ -349,9 +405,6 @@ def _fix_files(
     project_dir: Path,
     entry_point: str,
 ) -> dict[str, str]:
-
-    model = _get_model(MODEL_PLANNER)
-
     error_file, error_line = _parse_traceback(error_output, list(file_codes.keys()))
     error_type = _classify_error(error_output)
 
@@ -412,8 +465,7 @@ Rules:
 Fixed code for {fix_path}:"""
 
         try:
-            response = model.generate_content(prompt)
-            fixed = _strip_fences(response.text)
+            fixed = _strip_fences(_complete(prompt))
 
             full_path = project_dir / fix_path
             full_path.parent.mkdir(parents=True, exist_ok=True)
@@ -455,7 +507,7 @@ def _build_project(
         if speak: speak(msg)
         return msg
 
-    proj_name    = project_name or plan.get("project_name", "jarvis_project")
+    proj_name    = project_name or plan.get("project_name", "lessan_project")
     proj_name    = re.sub(r"[^\w\-]", "_", proj_name)
     project_dir  = PROJECTS_DIR / proj_name
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -495,10 +547,10 @@ def _build_project(
                 break
             except RateLimitError:
                 if attempt == 0:
-                    log("Rate limit — waiting 20s...")
-                    time.sleep(20)
+                    log("All backends rate-limited — short pause, then retry...")
+                    time.sleep(5)
                 else:
-                    log(f"Rate limit retry failed for {file_path}, skipping.")
+                    log(f"All backends still rate-limited for {file_path}, skipping.")
             except Exception as e:
                 log(f"Failed to write {file_path}: {e}")
                 break
@@ -586,6 +638,24 @@ def dev_agent(
 
     if not description:
         return "Please describe the project you want me to build, sir."
+
+    # New default path: build through the multi-agent framework
+    # (lessan_ai_agents.orchestrator.build_project). If the orchestrator
+    # is unavailable for any reason, fall back to the legacy monolithic
+    # builder below so the tool never breaks.
+    try:
+        from lessan_ai_agents.orchestrator import build_project
+
+        return build_project(
+            description  = description,
+            language     = language,
+            project_name = project_name,
+            timeout      = timeout,
+            speak        = speak,
+            player       = player,
+        )
+    except Exception as exc:
+        print(f"[DevAgent] Multi-agent orchestrator unavailable ({exc}) — using legacy builder.")
 
     return _build_project(
         description  = description,

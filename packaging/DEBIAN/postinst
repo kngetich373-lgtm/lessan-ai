@@ -1,13 +1,17 @@
 #!/bin/bash
 # ============================================================
 #  postinst — Lessan AI .deb maintainer script
-#  Runs as root after installation. Idempotent (safe on upgrade).
+#  Runs as root after installation. Intentionally MINIMAL and
+#  non-fatal: heavy setup (venv, pip, Playwright browsers)
+#  happens lazily in the user's launcher at first run, where it
+#  can be done without root and with full error reporting.
+#  A maintainer script that fails here breaks apt/dpkg, so we
+#  never exit non-zero for setup problems — only permission
+#  normalization and desktop-database refresh run here.
 # ============================================================
 set -e
 
 APP_DIR="/opt/lessan-ai"
-VENV_DIR="$APP_DIR/.venv"
-PW_BROWSERS="$APP_DIR/ms-playwright"
 LOG="/var/log/lessan-ai-install.log"
 
 log() {
@@ -16,36 +20,30 @@ log() {
 
 exec >>"$LOG" 2>&1
 
-log "=== Lessan AI postinst ==="
+log "=== Lessan AI postinst (v2) ==="
 
-# --- 1. Python venv --------------------------------------------
-if [ ! -x "$VENV_DIR/bin/python" ]; then
-    log "Creating virtualenv at $VENV_DIR ..."
-    python3 -m venv "$VENV_DIR" || {
-        log "ERROR: venv creation failed. Trying python3 -m venv --without-pip ..."
-        python3 -m venv --without-pip "$VENV_DIR"
-        curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
-        "$VENV_DIR/bin/python" /tmp/get-pip.py
-        rm -f /tmp/get-pip.py
-    }
+# --- 1. Ensure the shipped bundle is world-readable -------------
+# Older .debs shipped files with mode 0600 baked in, which made the
+# desktop user's rsync fail with "Permission denied" at launch.
+# Re-normalize every install so that never happens again.
+if [ -d "$APP_DIR" ]; then
+    chmod -R a+rX "$APP_DIR" || log "WARNING: could not normalize perms on $APP_DIR"
 fi
 
-log "Installing Python requirements ..."
-"$VENV_DIR/bin/pip" install --upgrade pip wheel setuptools
-"$VENV_DIR/bin/pip" install -r "$APP_DIR/requirements.txt"
+# --- 2. Remove stale root-owned venv/browsers placed by old
+#         postinst scripts (1.0.0). The launcher now maintains a
+#         per-user venv in ~/.local/share/lessan, so these root-owned
+#         dirs are dead weight and could confuse the package. -----
+rm -rf "$APP_DIR/.venv" "$APP_DIR/ms-playwright"
+rm -f "$APP_DIR/.first_run_done"
 
-# --- 2. Playwright Chromium (durable browsers path) ------------
-log "Installing Playwright Chromium browser ..."
-if [ -n "$SUDO_USER" ]; then
-    chown -R "$SUDO_USER":"$(id -gn "$SUDO_USER")" "$PW_BROWSERS" 2>/dev/null || true
+# --- 3. Refresh desktop menu / icon caches ----------------------
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications 2>/dev/null || true
 fi
-PLAYWRIGHT_BROWSERS_PATH="$PW_BROWSERS" "$VENV_DIR/bin/playwright" install chromium || {
-    log "WARNING: Playwright browser install failed — Lessan browser/WhatsApp features may need 'playwright install' run manually."
-}
-
-# --- 3. Runtime state directory (created on first *launch*, not here) ---
-# The data directory is owned by the desktop user and created by first_run.sh.
-install -d -m 755 /opt/lessan-ai
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -f /usr/share/icons/hicolor 2>/dev/null || true
+fi
 
 log "=== Lessan AI postinst complete ==="
 

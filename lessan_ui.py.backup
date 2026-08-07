@@ -1,0 +1,2228 @@
+from __future__ import annotations
+
+import json
+import math
+import os
+import platform
+import random
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+import psutil
+
+from PyQt6.QtCore import (
+    QEasingCurve, QMimeData, QPointF, QPropertyAnimation,
+    QRectF, Qt, QTimer, QUrl,
+    pyqtSignal, pyqtProperty,
+)
+from PyQt6.QtGui import (
+    QBrush, QColor, QDragEnterEvent, QDropEvent, QFont, QFontDatabase,
+    QKeySequence, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap,
+    QRadialGradient, QShortcut,
+)
+from PyQt6.QtWidgets import (
+    QApplication, QFileDialog, QFrame, QGraphicsDropShadowEffect,
+    QGraphicsOpacityEffect, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+    QPushButton, QSizePolicy, QTextEdit, QVBoxLayout, QWidget,
+)
+
+def _base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).parent
+    return Path(__file__).resolve().parent
+
+BASE_DIR   = _base_dir()
+CONFIG_DIR = BASE_DIR / "config"
+API_FILE   = CONFIG_DIR / "api_keys.json"
+
+_DEFAULT_W, _DEFAULT_H = 1160, 800
+_MIN_W,     _MIN_H     = 900, 600
+_LEFT_W  = 212
+_RIGHT_W = 408
+
+_OS  = platform.system()  # "Windows" | "Darwin" | "Linux"
+_TWOPI = 2.0 * math.pi
+
+class C:
+    """Galaxy Diamond Nebula palette — a deep-space void lit by nebulae and
+    refracting diamond light. The prism ramp makes every facet read as a
+    real cut gem catching a traveling light source."""
+
+    # Deep space
+    BG          = "#030212"   # abyss
+    BG_GRAD     = "#0d0824"   # lifted center (nebula core glow)
+    NEBULA_A    = "#1c0b44"   # violet nebula
+    NEBULA_B    = "#062433"   # teal nebula
+    NEBULA_C    = "#3b0a3a"   # magenta nebula
+
+    # Glass panels float above the galaxy
+    PANEL       = "#0f0c26"
+    PANEL_GLASS = "#161239"
+    CARD        = "#1b1749"
+    BORDER      = "#292363"
+    BORDER_L    = "#4139a3"
+    GLOW        = "#7c6cff"
+
+    # Prismatic light source
+    PRIMARY     = "#8b5cf6"
+    PRIMARY_L   = "#c4b5fd"
+    PRIMARY_D   = "#6d28d9"
+    ACCENT      = "#22d3ee"
+    ACCENT_L    = "#8cf1ff"
+    SUCCESS     = "#34d399"
+    SUCCESS_L   = "#8ff5d8"
+    WARNING     = "#ffd166"
+    WARNING_L   = "#ffe9ad"
+    ERROR       = "#ff5c8a"
+    ERROR_L     = "#ff9dbb"
+    ERROR_D     = "#c9204f"
+
+    MAGENTA     = "#ff7ac6"
+    GOLD        = "#ffd700"
+
+    # The prism ramp — pulls facets through violet, cyan, magenta, gold,
+    # emerald the way a real diamond splits white light.
+    PRISM = [
+        "#8b5cf6", "#22d3ee", "#ff7ac6", "#ffd166",
+        "#34d399", "#7c6cff", "#ff5c8a", "#67e8f9",
+    ]
+
+    # Text
+    TEXT        = "#f4f1ff"
+    TEXT_D      = "#bdb7ec"
+    TEXT_M      = "#847dc0"
+    TEXT_DIM    = "#4d478a"
+    WHITE       = "#ffffff"
+
+    # Lighting
+    SPECULAR    = "#ffffff"
+    RIM         = "#dcd3ff"
+    SHADOW      = "#000000"
+
+    GLASS       = "#10f1ccea"
+    GLASS_B     = "#5fbe5212"
+    GRAD_START  = "#8b5cf6"
+    GRAD_END    = "#22d3ee"
+
+    MUTED_C     = "#ff5c8a"
+    SPEAKING_C  = "#ff7ac6"
+
+def qcol(h: str, a: int = 255) -> QColor:
+    c = QColor(h)
+    c.setAlpha(max(0, min(255, a)))
+    return c
+
+def _apply_shadow(widget: QWidget, color: str = C.PRIMARY, radius: int = 20, offset: int = 0):
+    shadow = QGraphicsDropShadowEffect(widget)
+    shadow.setBlurRadius(radius)
+    shadow.setColor(qcol(color, 60))
+    shadow.setOffset(0, offset)
+    widget.setGraphicsEffect(shadow)
+
+def _apply_elevation(widget: QWidget, radius: int = 38, offset: int = 16, alpha: int = 170):
+    shadow = QGraphicsDropShadowEffect(widget)
+    shadow.setBlurRadius(radius)
+    shadow.setColor(qcol(C.SHADOW, alpha))
+    shadow.setOffset(0, offset)
+    widget.setGraphicsEffect(shadow)
+
+# ---------------------------------------------------------------------------
+# Drawing helpers — gem shapes used everywhere in the galaxy
+# ---------------------------------------------------------------------------
+
+def _draw_gem(p: QPainter, x: float, y: float, r: float,
+              color: str, alpha: int = 255, rot: float = 0.0):
+    """A real brilliant-cut faceted diamond centered at (x, y).
+
+    Larger gems get a full 8-fold crown, a table and a pavilion so they read
+    as genuine cut stones catching prism-split light.  Very small gems (the
+    diamond studs on trims and drop-zone borders) degrade to a clean little
+    kite so they stay crisp at tiny sizes."""
+    p.save()
+    p.translate(x, y)
+    p.rotate(math.degrees(rot))
+
+    s = abs(r)
+    if s < 4.2:
+        # Tiny stud — compact kite with a table hairline
+        top   = QPointF(0, -s)
+        right = QPointF(s * 0.72, 0)
+        bot   = QPointF(0, s)
+        left  = QPointF(-s * 0.72, 0)
+
+        base = QColor(color)
+        grad = QLinearGradient(0, -s, 0, s)
+        grad.setColorAt(0,   base.lighter(160))
+        grad.setColorAt(0.45, base)
+        grad.setColorAt(1,   base.darker(180))
+
+        path = QPainterPath()
+        path.moveTo(top)
+        path.lineTo(right)
+        path.lineTo(bot)
+        path.lineTo(left)
+        path.closeSubpath()
+
+        p.setPen(QPen(qcol(C.WHITE, min(255, alpha // 3)), 1))
+        p.setBrush(grad)
+        p.drawPath(path)
+
+        rt = s * 0.3
+        p.setPen(QPen(qcol(C.WHITE, min(255, alpha // 2)), 0.7))
+        p.drawLine(QPointF(-rt * 0.4, 0), QPointF(rt * 0.4, 0))
+
+        hl = QRadialGradient(0, -s * 0.35, s * 0.75)
+        hl.setColorAt(0, qcol(C.WHITE, min(255, int(alpha * 0.85))))
+        hl.setColorAt(1, qcol(C.WHITE, 0))
+        p.setBrush(hl)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QPointF(0, -s * 0.35), s * 0.42, s * 0.42)
+        p.restore()
+        return
+
+    n      = 8
+    step   = _TWOPI / n
+    girdle = [QPointF(s * math.cos(i * step), s * math.sin(i * step)) for i in range(n)]
+    tr     = s * 0.46
+    table  = [QPointF(tr * math.cos(step / 2 + i * step),
+                      tr * math.sin(step / 2 + i * step)) for i in range(n)]
+
+    base = QColor(color)
+    a    = max(0, min(255, alpha))
+    pill = max(0.4, s * 0.045)
+
+    # Crown facets — prism-split light, table -> girdle
+    for i in range(n):
+        T0, T1 = table[i], table[(i + 1) % n]
+        G0, G1 = girdle[i], girdle[(i + 1) % n]
+        path = QPainterPath()
+        path.moveTo(T0); path.lineTo(T1); path.lineTo(G1); path.lineTo(G0)
+        path.closeSubpath()
+        pc = QColor(C.PRISM[i % len(C.PRISM)])
+        grd = QLinearGradient(T0.x(), T0.y(), G1.x(), G1.y())
+        grd.setColorAt(0, qcol(pc.lighter(150).name(), int(a * 0.92)))
+        grd.setColorAt(1, qcol(pc.darker(120).name(), int(a * 0.58)))
+        p.setBrush(grd)
+        p.setPen(QPen(qcol(C.WHITE, max(12, a // 5)), pill))
+        p.drawPath(path)
+
+    # Table — the bright top window of the cut
+    tpath = QPainterPath()
+    tpath.moveTo(table[0])
+    for pt in table[1:]:
+        tpath.lineTo(pt)
+    tpath.closeSubpath()
+    tg = QRadialGradient(0, 0, tr)
+    tg.setColorAt(0, base.lighter(175))
+    tg.setColorAt(1, base.darker(110))
+    p.setBrush(tg)
+    p.setPen(QPen(qcol(C.WHITE, a // 2), max(0.5, s * 0.05)))
+    p.drawPath(tpath)
+
+    # Pavilion — girdle -> culet, darker so the stone has real depth
+    culet = QPointF(0, s * 0.42)
+    for i in range(n):
+        G0, G1 = girdle[i], girdle[(i + 1) % n]
+        path = QPainterPath()
+        path.moveTo(G0); path.lineTo(G1); path.lineTo(culet)
+        path.closeSubpath()
+        pc = QColor(C.PRISM[i % len(C.PRISM)]).darker(135)
+        grd = QLinearGradient(G0.x(), G0.y(), culet.x(), culet.y())
+        grd.setColorAt(0, qcol(pc.lighter(115).name(), int(a * 0.78)))
+        grd.setColorAt(1, qcol(pc.darker(170).name(), int(a * 0.95)))
+        p.setBrush(grd)
+        p.setPen(QPen(qcol(C.WHITE, max(10, a // 6)), max(0.35, s * 0.035)))
+        p.drawPath(path)
+
+    # Girdle outline
+    gpath = QPainterPath()
+    gpath.moveTo(girdle[0])
+    for pt in girdle[1:]:
+        gpath.lineTo(pt)
+    gpath.closeSubpath()
+    p.setPen(QPen(qcol(C.WHITE, a // 2), max(0.6, s * 0.055)))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawPath(gpath)
+
+    # Specular glint — the traveling light that makes it feel like a gem
+    hl = QRadialGradient(-s * 0.22, -s * 0.3, s * 0.95)
+    hl.setColorAt(0, qcol(C.WHITE, min(255, a)))
+    hl.setColorAt(0.4, qcol(C.WHITE, int(a * 0.35)))
+    hl.setColorAt(1, qcol(C.WHITE, 0))
+    p.setBrush(hl)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.drawEllipse(QPointF(0, 0), s * 0.95, s * 0.95)
+
+    p.restore()
+
+def _draw_sparkle(p: QPainter, x: float, y: float, r: float,
+                  color: str = C.WHITE, alpha: int = 160,
+                  squash: float = 1.0, stretch: float = 1.0):
+    """A 4-point star glint — the little 'pop' of light a diamond throws."""
+    p.save()
+    p.translate(x, y)
+    p.scale(stretch, squash)
+
+    path = QPainterPath()
+    path.moveTo(0, -r)
+    path.quadTo(r * 0.16, -r * 0.16, r, 0)
+    path.quadTo(r * 0.16,  r * 0.16, 0, r)
+    path.quadTo(-r * 0.16, r * 0.16, -r, 0)
+    path.quadTo(-r * 0.16, -r * 0.16, 0, -r)
+    path.closeSubpath()
+
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QBrush(qcol(color, alpha)))
+    p.drawPath(path)
+    p.restore()
+
+
+class HoverGlowButton(QPushButton):
+    """A button whose glow shadow genuinely animates on hover."""
+
+    def __init__(self, *args, glow_color: str = None, base_radius: int = 16,
+                 hover_radius: int = 34, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._glow_color = glow_color or C.PRIMARY
+        self._base_radius = base_radius
+        self._hover_radius = hover_radius
+
+        self._shadow = QGraphicsDropShadowEffect(self)
+        self._shadow.setColor(qcol(self._glow_color, 90))
+        self._shadow.setBlurRadius(base_radius)
+        self._shadow.setOffset(0, 2)
+        self.setGraphicsEffect(self._shadow)
+
+        self._anim = QPropertyAnimation(self._shadow, b"blurRadius", self)
+        self._anim.setDuration(220)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def enterEvent(self, e):
+        self._anim.stop()
+        self._anim.setStartValue(self._shadow.blurRadius())
+        self._anim.setEndValue(self._hover_radius)
+        self._anim.start()
+        super().enterEvent(e)
+
+    def leaveEvent(self, e):
+        self._anim.stop()
+        self._anim.setStartValue(self._shadow.blurRadius())
+        self._anim.setEndValue(self._base_radius)
+        self._anim.start()
+        super().leaveEvent(e)
+
+class _SysMetrics:
+    def __init__(self):
+        self.cpu  = 0.0
+        self.mem  = 0.0
+        self.net  = 0.0
+        self.gpu  = -1.0
+        self.tmp  = -1.0
+        self._lock = threading.Lock()
+        self._last_net = psutil.net_io_counters()
+        self._last_net_t = time.time()
+        self._running = True
+        t = threading.Thread(target=self._loop, daemon=True)
+        t.start()
+
+    def _loop(self):
+        while self._running:
+            try:
+                self._update()
+            except Exception:
+                pass
+            time.sleep(1.5)
+
+    def _update(self):
+        cpu = psutil.cpu_percent(interval=None)
+        mem = psutil.virtual_memory().percent
+
+        nc  = psutil.net_io_counters()
+        now = time.time()
+        dt  = now - self._last_net_t
+        if dt > 0:
+            sent = (nc.bytes_sent - self._last_net.bytes_sent) / dt
+            recv = (nc.bytes_recv - self._last_net.bytes_recv) / dt
+            net  = (sent + recv) / (1024 * 1024)
+        else:
+            net = 0.0
+        self._last_net   = nc
+        self._last_net_t = now
+
+        gpu = self._get_gpu()
+        tmp = self._get_temp()
+
+        with self._lock:
+            self.cpu = cpu
+            self.mem = mem
+            self.net = net
+            self.gpu = gpu
+            self.tmp = tmp
+
+    def _get_gpu(self) -> float:
+        try:
+            r = subprocess.run(
+                ["nvidia-smi", "--query-gpu=utilization.gpu",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=2
+            )
+            if r.returncode == 0:
+                vals = [float(v.strip()) for v in r.stdout.strip().split("\n") if v.strip()]
+                if vals:
+                    return sum(vals) / len(vals)
+        except Exception:
+            pass
+
+        if _OS == "Linux":
+            try:
+                r = subprocess.run(
+                    ["rocm-smi", "--showuse", "--csv"],
+                    capture_output=True, text=True, timeout=2
+                )
+                if r.returncode == 0:
+                    for line in r.stdout.strip().split("\n"):
+                        parts = line.split(",")
+                        if len(parts) >= 2:
+                            try:
+                                return float(parts[1].strip().replace("%", ""))
+                            except ValueError:
+                                pass
+            except Exception:
+                pass
+            try:
+                r = subprocess.run(
+                    ["intel_gpu_top", "-J", "-s", "500"],
+                    capture_output=True, text=True, timeout=1
+                )
+                if r.returncode == 0 and "Render/3D" in r.stdout:
+                    import re
+                    m = re.search(r'"busy":\s*([\d.]+)', r.stdout)
+                    if m:
+                        return float(m.group(1))
+            except Exception:
+                pass
+
+        if _OS == "Darwin":
+            try:
+                r = subprocess.run(
+                    ["sudo", "-n", "powermetrics", "-n", "1", "-i", "500",
+                     "--samplers", "gpu_power"],
+                    capture_output=True, text=True, timeout=2
+                )
+                if r.returncode == 0 and "GPU" in r.stdout:
+                    import re
+                    m = re.search(r'GPU\s+Active:\s+([\d.]+)%', r.stdout)
+                    if m:
+                        return float(m.group(1))
+            except Exception:
+                pass
+
+        return -1.0
+
+    def _get_temp(self) -> float:
+        try:
+            temps = psutil.sensors_temperatures()
+            candidates = ["coretemp", "k10temp", "cpu_thermal", "acpitz",
+                          "cpu-thermal", "zenpower", "it8688"]
+            for name in candidates:
+                if name in temps:
+                    entries = [e for e in temps[name] if e.current > 0]
+                    if entries:
+                        return sum(e.current for e in entries) / len(entries)
+            for entries in temps.values():
+                valid_entries = [e for e in entries if e.current > 0]
+                if valid_entries:
+                    return sum(e.current for e in valid_entries) / len(valid_entries)
+        except Exception:
+            pass
+        if _OS == "Darwin":
+            try:
+                r = subprocess.run(
+                    ["osx-cpu-temp"], capture_output=True, text=True, timeout=2
+                )
+                if r.returncode == 0:
+                    import re
+                    m = re.search(r"([\d.]+)", r.stdout)
+                    if m:
+                        return float(m.group(1))
+            except Exception:
+                pass
+        if _OS == "Windows":
+            try:
+                r = subprocess.run(
+                    ["powershell", "-Command",
+                     "(Get-WmiObject MSAcpi_ThermalZoneTemperature -Namespace root/wmi).CurrentTemperature"],
+                    capture_output=True, text=True, timeout=3
+                )
+                if r.returncode == 0 and r.stdout.strip():
+                    raw = float(r.stdout.strip().split("\n")[0])
+                    return (raw / 10.0) - 273.15
+            except Exception:
+                pass
+        return -1.0
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "cpu": self.cpu,
+                "mem": self.mem,
+                "net": self.net,
+                "gpu": self.gpu,
+                "tmp": self.tmp,
+            }
+
+_metrics = _SysMetrics()
+
+# ---------------------------------------------------------------------------
+# Galaxy backdrop — the whole window lives inside this starfield
+# ---------------------------------------------------------------------------
+
+class GalaxyBackdrop(QWidget):
+    """Deep-space backdrop: layered nebula blobs, a dust lane, and thousands
+    of twinkling stars, with an occasional shooting star. Every panel floats
+    semi-transparently above it so the galaxy glows through."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._stars: list[list[float]] = []
+        self._shooting: list[float] | None = None
+        self._shoot_t = 0.0
+        rng = random.Random(984106956)
+        for i in range(240):
+            self._stars.append([
+                rng.random(),            # x frac
+                rng.random(),            # y frac
+                rng.uniform(0.4, 1.8),   # radius
+                rng.uniform(0, _TWOPI),  # twinkle phase
+                rng.uniform(1.2, 4.0),   # twinkle speed
+                rng.uniform(0.25, 0.9),  # base alpha
+                rng.uniform(0, _TWOPI),  # hue phase (prismatic tint)
+            ])
+        t = QTimer(self)
+        t.timeout.connect(self.update)
+        t.start(33)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        W, H = self.width(), self.height()
+
+        # Deep space base
+        base = QLinearGradient(0, 0, W, H)
+        base.setColorAt(0, qcol("#05031a"))
+        base.setColorAt(0.5, qcol(C.BG))
+        base.setColorAt(1, qcol("#02010c"))
+        p.fillRect(self.rect(), base)
+
+        # Nebula blobs
+        blobs = [
+            (W * 0.22, H * 0.30, max(W, H) * 0.62, C.NEBULA_A),
+            (W * 0.80, H * 0.75, max(W, H) * 0.70, C.NEBULA_B),
+            (W * 0.60, H * 0.15, max(W, H) * 0.50, C.NEBULA_C),
+        ]
+        for bx, by, br, col in blobs:
+            g = QRadialGradient(bx, by, br)
+            g.setColorAt(0, qcol(col, 110))
+            g.setColorAt(0.55, qcol(col, 34))
+            g.setColorAt(1, qcol(col, 0))
+            p.setBrush(g)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.drawEllipse(QPointF(bx, by), br, br)
+
+        # Dust lane — a soft diagonal band
+        dust = QLinearGradient(0, H * 0.15, W, H * 0.85)
+        dust.setColorAt(0, qcol(C.NEBULA_B, 0))
+        dust.setColorAt(0.45, qcol("#0a1a33", 70))
+        dust.setColorAt(0.55, qcol("#05101f", 90))
+        dust.setColorAt(1, qcol(C.NEBULA_A, 0))
+        p.setBrush(dust)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRect(0, 0, W, H)
+
+        # Twinkling stars
+        now = time.time()
+        for xf, yf, r, ph, sp, ba, hue_phase in self._stars:
+            tw = 0.5 + 0.5 * math.sin(now * sp + ph)
+            a = int(ba * (30 + 190 * tw))
+            # a few stars get a prismatic tint
+            if hue_phase > 5.6:
+                col = C.PRISM[int(hue_phase * 8) % len(C.PRISM)]
+            else:
+                col = C.WHITE
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(qcol(col, a)))
+            p.drawEllipse(QPointF(xf * W, yf * H), r, r)
+            if tw > 0.92:
+                # bright star flares a cross
+                _draw_sparkle(p, xf * W, yf * H, r * 3.2, col, int(70 * tw))
+
+        # Shooting star
+        if self._shooting:
+            sx, sy, vx, vy, life = self._shooting
+            trail = QLinearGradient(sx, sy, sx - vx * 6, sy - vy * 6)
+            trail.setColorAt(0, qcol(C.WHITE, int(200 * life)))
+            trail.setColorAt(1, qcol(C.ACCENT, 0))
+            pen = QPen(trail, 1.6)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(pen)
+            p.drawLine(QPointF(sx, sy), QPointF(sx - vx * 6, sy - vy * 6))
+
+    def _spawn_shooting(self):
+        W, H = self.width(), self.height()
+        self._shooting = [
+            random.uniform(0.1, 0.9) * W,
+            random.uniform(0.05, 0.5) * H,
+            random.uniform(3.0, 6.0),
+            random.uniform(1.5, 3.5),
+            1.0,
+        ]
+
+    def step(self):
+        """Drive meteors. Called by the HUD tick so timing stays game-loop-ish."""
+        now = time.time()
+        if self._shooting:
+            s = self._shooting
+            s[0] += s[2] * 2.2
+            s[1] += s[3] * 2.2
+            s[4] -= 0.012
+            if s[4] <= 0 or s[0] > self.width() + 80 or s[1] > self.height() + 80:
+                self._shooting = None
+        elif now > self._shoot_t:
+            self._shoot_t = now + random.uniform(2.5, 7.0)
+            self._spawn_shooting()
+
+# ---------------------------------------------------------------------------
+# Gem trim — diamonds strung along panel edges
+# ---------------------------------------------------------------------------
+
+class GemTrim(QWidget):
+    """A jeweled trim strip: tiny faceted diamonds strung along the top edge
+    of a panel, each with its own twinkle and the occasional glint pop."""
+
+    def __init__(self, color: str = None, parent=None):
+        super().__init__(parent)
+        self._color = color or C.PRIMARY_L
+        self._phase = random.uniform(0, _TWOPI)
+        self.setFixedHeight(16)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        t = QTimer(self)
+        t.timeout.connect(self.update)
+        t.start(90)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        W, H = self.width(), self.height()
+        cy = H / 2
+        n = max(1, W // 26)
+        step = W / n
+        now = time.time()
+        for i in range(n):
+            x = step * (i + 0.5)
+            tw = 0.55 + 0.45 * math.sin(now * 2.3 + self._phase + i * 1.73)
+            size = 3.4 + 3.2 * tw
+            col = C.PRISM[i % len(C.PRISM)] if (i % 2 == 0) else self._color
+            _draw_gem(p, x, cy, size, col, min(255, int(120 + 130 * tw)))
+            if tw > 0.88:
+                _draw_sparkle(p, x, cy - size - 2, size * 1.2, C.WHITE, int(110 * (tw - 0.8) * 5))
+        # hairline connector
+        p.setPen(QPen(qcol(C.BORDER_L, 90), 1))
+        p.drawLine(QPointF(0, cy), QPointF(W, cy))
+
+# ---------------------------------------------------------------------------
+# The heart — a live cut-diamond with orbiting gems
+# ---------------------------------------------------------------------------
+
+class DiamondCanvas(QWidget):
+    """A faceted brilliant-cut diamond floating at the heart of a Milky-Way
+    galaxy: real-shaped diamond stars orbit the core on tilted spiral arms
+    with differential rotation, and each one fades in, turns, and fades back
+    out like a star twinkling in the void. State drives its light color; the
+    prism facets catch that light the way real diamond does."""
+
+    STATE_COLORS = {
+        "LISTENING":     C.ACCENT,
+        "THINKING":       C.WARNING,
+        "PROCESSING":     C.PRIMARY,
+        "SPEAKING":       C.MAGENTA,
+        "MUTED":          C.ERROR,
+        "INITIALIZING":   C.PRIMARY_L,
+    }
+
+    def __init__(self, face_path: str, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
+        self.setMinimumSize(300, 300)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        self.muted    = False
+        self.speaking = False
+        self.state    = "INITIALIZING"
+
+        self._tick      = 0
+        self._scale     = 1.0
+        self._tgt_scale = 1.0
+        self._glow      = 0.5
+        self._tgt_glow  = 0.5
+        self._last_t    = time.time()
+        self._pulse     = 0.0
+        self._particles: list[list[float]] = []
+        self._face_px: QPixmap | None = None
+        self._load_face(face_path)
+
+        # Milky Way galaxy — many faceted diamond stars on tilted elliptical
+        # orbits with spiral-arm clustering, differential rotation, and a
+        # fade-in / fade-out lifecycle so gems appear, orbit, and dissolve
+        # back into the void like real stars twinkling out.
+        rng = random.Random(22071985)
+        self._galaxy: list[list[float]] = []
+        for i in range(150):
+            rf = rng.uniform(0.30, 1.0)                 # radius fraction
+            if rng.random() < 0.66:                     # spiral arm member
+                base_a = (i % 3) * (_TWOPI / 3.0)
+                ang = base_a + math.log1p(rf) * 2.7 + rng.gauss(0, 0.17)
+            else:                                       # halo drift
+                ang = rng.uniform(0, _TWOPI)
+            speed = (0.011 / (0.22 + rf * 0.85)) * rng.uniform(0.75, 1.25)
+            if rng.random() < 0.22:
+                speed *= -1.0                           # retrograde strays
+            tilt = rng.uniform(0.34, 0.62)              # disk foreshortening
+            gs   = rng.uniform(1.1, 3.3)                # diamond dust
+            if i % 9 == 0:
+                gs = rng.uniform(4.2, 5.8)              # hero gems
+            hue  = rng.randrange(len(C.PRISM))
+            fph  = rng.uniform(0, 100)
+            fsp  = rng.uniform(0.004, 0.026)
+            life = rng.uniform(0.0, 1.0)
+            lsp  = rng.uniform(0.0006, 0.003)
+            self._galaxy.append([rf, ang, speed, tilt, gs, hue, fph, fsp, life, lsp])
+
+        # Local starfield (inside the canvas)
+        rng = random.Random(109367109)
+        self._stars = [
+            [rng.random(), rng.random(), rng.uniform(0.35, 1.4),
+             rng.uniform(0, _TWOPI), rng.uniform(1.0, 3.5),
+             rng.uniform(0.25, 0.85)]
+            for _ in range(90)
+        ]
+
+        # Eased light color
+        start = QColor(C.PRIMARY_L)
+        self._col_r, self._col_g, self._col_b = start.red(), start.green(), start.blue()
+
+        self._tmr = QTimer(self)
+        self._tmr.timeout.connect(self._step)
+        self._tmr.start(16)
+
+    def _active_state_key(self) -> str:
+        if self.muted:
+            return "MUTED"
+        if self.speaking:
+            return "SPEAKING"
+        return self.state if self.state in self.STATE_COLORS else "LISTENING"
+
+    def _c(self, alpha: int = 255) -> QColor:
+        c = QColor(int(self._col_r), int(self._col_g), int(self._col_b))
+        c.setAlpha(max(0, min(255, alpha)))
+        return c
+
+    def _load_face(self, path: str):
+        try:
+            from PIL import Image, ImageDraw
+            import io
+            img = Image.open(path).convert("RGBA")
+            sz  = min(img.size)
+            img = img.resize((sz, sz), Image.LANCZOS)
+            mk  = Image.new("L", (sz, sz), 0)
+            ImageDraw.Draw(mk).ellipse((2, 2, sz - 2, sz - 2), fill=255)
+            img.putalpha(mk)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            px = QPixmap()
+            px.loadFromData(buf.getvalue())
+            self._face_px = px
+        except Exception:
+            self._face_px = None
+
+    def _step(self):
+        self._tick += 1
+        now = time.time()
+
+        target = QColor(self.STATE_COLORS.get(self._active_state_key(), C.PRIMARY))
+        col_sp = 0.06
+        self._col_r += (target.red()   - self._col_r) * col_sp
+        self._col_g += (target.green() - self._col_g) * col_sp
+        self._col_b += (target.blue()  - self._col_b) * col_sp
+
+        # Breathing
+        if now - self._last_t > (0.08 if self.speaking else 0.2):
+            if self.speaking:
+                self._tgt_scale = random.uniform(1.02, 1.09)
+                self._tgt_glow  = random.uniform(0.75, 1.0)
+            elif self.muted:
+                self._tgt_scale = random.uniform(0.97, 1.0)
+                self._tgt_glow  = random.uniform(0.2, 0.35)
+            else:
+                self._tgt_scale = random.uniform(1.0, 1.025)
+                self._tgt_glow  = random.uniform(0.5, 0.7)
+            self._last_t = now
+
+        sp = 0.12
+        self._scale += (self._tgt_scale - self._scale) * sp
+        self._glow  += (self._tgt_glow  - self._glow)  * sp
+
+        # Galaxy disk — differential rotation + gem life cycles (appear,
+        # orbit, then fade back out so the galaxy never looks static).
+        gal_speed = 1.9 if self.speaking else 1.0
+        for g in self._galaxy:
+            g[1] = (g[1] + g[2] * gal_speed) % _TWOPI
+            g[6] += g[7]
+            g[8] += g[9]
+            if g[8] >= 1.0:
+                g[8] = 1.0
+                g[9] = -abs(g[9])
+            elif g[8] <= 0.0:
+                g[8] = 0.0
+                g[9] = abs(g[9])
+
+        # Pulse
+        pulse_speed = 1.6 if self.speaking else 0.65
+        self._pulse = (self._pulse + pulse_speed) % 360
+
+        # Comet particles when speaking
+        if self.speaking and random.random() < 0.35:
+            W, H = self.width(), self.height()
+            cx, cy = W / 2, H / 2
+            ang = random.uniform(0, _TWOPI)
+            r_s = min(W, H) * 0.22
+            self._particles.append([
+                cx + math.cos(ang) * r_s,
+                cy + math.sin(ang) * r_s,
+                math.cos(ang) * random.uniform(0.6, 1.6),
+                math.sin(ang) * random.uniform(0.6, 1.6) - 0.3,
+                1.0,
+                _TWOPI * random.random(),
+            ])
+
+        self._particles = [
+            [pt[0]+pt[2], pt[1]+pt[3], pt[2]*0.98, pt[3]*0.98, pt[4]-0.02, pt[5]]
+            for pt in self._particles if pt[4] > 0
+        ]
+
+        # Occasionally sparkle the panel trims (they run their own timers,
+        # nothing to do here) — update window backdrop meteors.
+        w = self.window()
+        if isinstance(w, MainWindow) and hasattr(w, "_backdrop"):
+            w._backdrop.step()
+
+        self.update()
+
+    # -- main brilliant -------------------------------
+    def _draw_brilliant(self, p, cx, cy, r, rot, glow):
+        n = 8
+        step  = _TWOPI / n
+        now   = time.time()
+
+        girdle = [QPointF(cx + r * math.cos(rot + i * step),
+                          cy + r * math.sin(rot + i * step)) for i in range(n)]
+        tr = r * 0.47
+        table = [QPointF(cx + tr * math.cos(rot + step / 2 + i * step),
+                         cy + tr * math.sin(rot + step / 2 + i * step)) for i in range(n)]
+
+        # Outer prismatic glow
+        glow_r = r * 1.65
+        g = QRadialGradient(cx, cy, glow_r)
+        g.setColorAt(0,   qcol(self._c().name(), int(80 * glow)))
+        g.setColorAt(0.45, qcol(self._c().name(), int(30 * glow)))
+        g.setColorAt(1,   qcol(C.WHITE, 0))
+        p.setBrush(g)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QPointF(cx, cy), glow_r, glow_r)
+
+        # Crown facets — prism-split light
+        for i in range(n):
+            T0, T1 = table[i], table[(i + 1) % n]
+            G0, G1 = girdle[i], girdle[(i + 1) % n]
+            path = QPainterPath()
+            path.moveTo(T0); path.lineTo(T1); path.lineTo(G1); path.lineTo(G0)
+            path.closeSubpath()
+
+            prism_col = QColor(C.PRISM[i % len(C.PRISM)])
+            shimmer = 0.0
+            if not self.muted:
+                shimmer = 0.18 * math.sin(now * 2.0 + i * 0.9)
+            brush = QLinearGradient(T0.x(), T0.y(), G1.x(), G1.y())
+            brush.setColorAt(0, qcol(prism_col.lighter(140).name(), int(120 * glow + 30)))
+            brush.setColorAt(1, qcol(prism_col.darker(130).name(), int(70 * glow + 20)))
+            p.setBrush(brush)
+            p.setPen(QPen(qcol(C.WHITE, 28), 1))
+            p.drawPath(path)
+
+        # Table
+        tpath = QPainterPath()
+        tpath.moveTo(table[0])
+        for pt in table[1:]:
+            tpath.lineTo(pt)
+        tpath.closeSubpath()
+        base = self._c()
+        tgrad = QRadialGradient(cx, cy, tr)
+        tgrad.setColorAt(0,   base.lighter(150))
+        tgrad.setColorAt(1,   base.darker(115))
+        p.setBrush(tgrad)
+        p.setPen(QPen(qcol(C.WHITE, 70), 1.3))
+        p.drawPath(tpath)
+
+        # Face photo lives inside the table window
+        if self._face_px:
+            f_sz = int(tr * 1.42)
+            scaled = self._face_px.scaled(
+                f_sz, f_sz,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            p.setClipPath(tpath)
+            p.drawPixmap(int(cx - f_sz / 2), int(cy - f_sz / 2), scaled)
+            # facet hairlines over the photo so it sits *inside* the cut
+            p.setPen(QPen(qcol(C.WHITE, 90), 0.8))
+            for i in range(n):
+                p.drawLine(table[i], girdle[i])
+            p.setClipping(False)
+
+        # Girdle outline
+        gpath = QPainterPath()
+        gpath.moveTo(girdle[0])
+        for pt in girdle[1:]:
+            gpath.lineTo(pt)
+        gpath.closeSubpath()
+        p.setPen(QPen(qcol(C.WHITE, 90), 1.5))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(gpath)
+
+        # Traveling specular sweep — the light that makes it feel like a gem
+        glint_x = cx + r * 0.38 * math.cos(-rot * 2)
+        glint_y = cy + r * 0.38 * math.sin(-rot * 2)
+        spec = QRadialGradient(glint_x, glint_y, r * 0.75)
+        spec.setColorAt(0, qcol(C.WHITE, int(120 * glow)))
+        spec.setColorAt(0.42, qcol(C.WHITE, int(24 * glow)))
+        spec.setColorAt(1, qcol(C.WHITE, 0))
+        p.setBrush(spec)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QPointF(glint_x, glint_y), r * 0.75, r * 0.75)
+
+        # Hard glint pop at one crown vertex
+        vp = girdle[int(now * 1.4) % n]
+        _draw_sparkle(p, vp.x(), vp.y(), r * 0.14, C.WHITE, int(150 * glow))
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        W, H = self.width(), self.height()
+        cx, cy = W / 2, H / 2
+        fw = min(W, H)
+
+        # Canvas deep-space gradient
+        bg = QRadialGradient(cx, cy * 0.85, fw * 1.0)
+        bg.setColorAt(0,   qcol(C.BG_GRAD))
+        bg.setColorAt(0.55, qcol(C.BG))
+        bg.setColorAt(1,   qcol("#02010c"))
+        p.fillRect(self.rect(), bg)
+
+        # Local nebula tint
+        neb = QRadialGradient(cx, cy, fw * 0.85)
+        neb.setColorAt(0, qcol(C.NEBULA_A, 36))
+        neb.setColorAt(0.6, qcol(C.NEBULA_B, 18))
+        neb.setColorAt(1, qcol(C.NEBULA_A, 0))
+        p.setBrush(neb)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QPointF(cx, cy), fw * 0.85, fw * 0.85)
+
+        # Twinkling canvas stars
+        now = time.time()
+        for xf, yf, r, ph, spd, ba in self._stars:
+            tw = 0.5 + 0.5 * math.sin(now * spd + ph)
+            a = int(ba * (25 + 130 * tw))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(qcol(C.WHITE, a)))
+            p.drawEllipse(QPointF(xf * W, yf * H), r, r)
+
+        r_orb = fw * 0.26
+
+        # Faint sensor rings
+        for i in range(1, 4):
+            rr = r_orb * (2.7 + i * 0.58)
+            p.setPen(QPen(qcol(C.GLOW, 12), 1))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(QRectF(cx - rr, cy - rr, rr * 2, rr * 2))
+
+        # Glow rings
+        glow_alpha = int(self._glow * 95)
+        steps = 8
+        for i in range(steps):
+            frac = i / steps
+            r = r_orb * (1.55 + frac * 1.15)
+            a = max(0, int(glow_alpha * (1 - frac) ** 2))
+            p.setPen(QPen(self._c(a), 2))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawEllipse(QRectF(cx - r, cy - r, r * 2, r * 2))
+
+        # ---- Milky Way galaxy disk: faceted diamond stars orbiting the core ----
+        gal_r = r_orb * 2.18
+
+        # Soft galactic glow band, tilted like a spiral disk
+        disk_grad = QRadialGradient(0, 0, gal_r)
+        disk_grad.setColorAt(0, qcol(self._c().name(), int(14 * self._glow)))
+        disk_grad.setColorAt(0.55, qcol(C.NEBULA_A, int(10 * self._glow)))
+        disk_grad.setColorAt(1, qcol(C.NEBULA_A, 0))
+        p.save()
+        p.translate(cx, cy)
+        p.scale(1.0, 0.46)
+        p.setBrush(disk_grad)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(QPointF(0, 0), gal_r, gal_r)
+        # Three spiral dust wisps winding out from the core
+        for k in range(3):
+            wisp = QPen(qcol(C.PRISM[k], int(13 * self._glow)), 1.3)
+            wisp.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(wisp)
+            base_a = k * _TWOPI / 3.0
+            prev = None
+            for i in range(1, 56):
+                t = i / 56.0
+                wr = gal_r * (0.12 + t * 0.82)
+                wa = base_a + t * 3.0 + (self._tick * 0.0016) * (1.0 - t * 0.6)
+                pt = QPointF(wr * math.cos(wa), wr * math.sin(wa))
+                if prev is not None:
+                    p.drawLine(prev, pt)
+                prev = pt
+        p.restore()
+
+        # The diamond stars themselves — drawn in flat space so every facet
+        # stays a real gem while its orbit is foreshortened into the disk.
+        for g in self._galaxy:
+            rf, ang, _spd, tilt, gs, hue_i, fph, _fsp, life, _lsp = g
+            rr = gal_r * rf
+            x  = cx + rr * math.cos(ang)
+            y  = cy + rr * math.sin(ang) * tilt
+            tw = 0.5 + 0.5 * math.sin(fph * 2.0)
+            alpha = int(255 * life * (0.3 + 0.7 * tw) * (0.45 + 0.55 * self._glow))
+            if alpha < 6:
+                continue
+            col = C.PRISM[hue_i]
+            _draw_gem(p, x, y, gs, col, min(255, alpha), rot=ang * 2.4 + fph * 0.5)
+            if gs >= 4.2:
+                if tw > 0.55:
+                    _draw_sparkle(p, x, y, gs * 2.6, C.WHITE, int(150 * tw * life))
+            elif tw > 0.9:
+                _draw_sparkle(p, x, y, gs * 1.9, col, int(90 * tw * life))
+
+        # Prismatic pulse arcs
+        pulse_r = r_orb * (1.08 + 0.30 * math.sin(math.radians(self._pulse)))
+        pulse_a = int(70 * (0.5 + 0.5 * math.sin(math.radians(self._pulse))))
+        pen = QPen(self._c(pulse_a), 1.6)
+        pen.setStyle(Qt.PenStyle.DotLine)
+        p.setPen(pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QRectF(cx - pulse_r, cy - pulse_r, pulse_r * 2, pulse_r * 2))
+        # three colored arc segments riding the pulse
+        for k, col in enumerate(C.PRISM[:3]):
+            seg_pen = QPen(qcol(col, max(0, pulse_a - 20)), 2.2)
+            seg_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(seg_pen)
+            start_a = int((self._pulse + k * 120) * 16)
+            p.drawArc(QRectF(cx - pulse_r, cy - pulse_r, pulse_r * 2, pulse_r * 2),
+                      start_a, 50 * 16)
+
+        # Main diamond
+        self._draw_brilliant(p, cx, cy, r_orb * self._scale,
+                             math.radians(self._tick * 0.12), self._glow)
+
+        # Comet particles (speaking)
+        for pt in self._particles:
+            a = max(0, min(255, int(pt[4] * 255)))
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(self._c(a)))
+            p.drawEllipse(QPointF(pt[0], pt[1]), 2.4, 2.4)
+            # streak
+            streak = QPen(qcol(self._c().name(), a // 2), 1.2)
+            streak.setCapStyle(Qt.PenCapStyle.RoundCap)
+            p.setPen(streak)
+            p.drawLine(QPointF(pt[0], pt[1]),
+                       QPointF(pt[0] - pt[2] * 5, pt[1] - pt[3] * 5))
+
+        # Status chip
+        status_y = cy + r_orb * 1.92
+        state_key = self._active_state_key()
+        status_text = {
+            "MUTED": "MUTED", "SPEAKING": "SPEAKING", "THINKING": "THINKING",
+            "PROCESSING": "PROCESSING", "LISTENING": "LISTENING",
+        }.get(state_key, self.state)
+        status_color = self.STATE_COLORS.get(state_key, C.PRIMARY)
+
+        pw, ph = 150, 34
+        pr = QRectF(cx - pw / 2, status_y - ph / 2, pw, ph)
+        p.setBrush(QBrush(qcol(status_color, 26)))
+        p.setPen(QPen(qcol(status_color, 110), 1))
+        p.drawRoundedRect(pr, 17, 17)
+
+        # Gem dot
+        _draw_gem(p, cx - pw / 2 + 22, status_y, 6, status_color, 255,
+                  rot=math.radians(self._tick * 1.5))
+        _draw_sparkle(p, cx - pw / 2 + 22, status_y - 8, 8, C.WHITE, 90)
+
+        p.setPen(QPen(qcol(status_color), 1))
+        p.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+        p.drawText(QRectF(cx - pw / 2 + 36, status_y - 10, pw - 44, 20),
+                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                   status_text)
+
+        # Ambient sparkles drifting around the diamond
+        for k in range(3):
+            sa = (self._tick * 0.7 + k * 137) % 360
+            sr = r_orb * (2.3 + 0.5 * math.sin(math.radians(self._tick * 0.4 + k * 90)))
+            sx = cx + sr * math.cos(math.radians(sa))
+            sy = cy + sr * math.sin(math.radians(sa))
+            tw = 0.5 + 0.5 * math.sin(now * 2.6 + k * 2.1)
+            _draw_sparkle(p, sx, sy, 4 + 6 * tw, C.PRISM[k], int(90 * tw))
+
+# ---------------------------------------------------------------------------
+# Gem metric card — holographic telemetry gems
+# ---------------------------------------------------------------------------
+
+class GemMetricCard(QWidget):
+    """A glass telemetry gem: diamond-cut corners, an animated arc gauge,
+    and a tiny drifting sparkle. Values ease toward each new reading."""
+
+    def __init__(self, label: str, icon: str, color: str = C.PRIMARY, parent=None):
+        super().__init__(parent)
+        self._label = label
+        self._icon  = icon
+        self._color = color
+        self._value = 0.0
+        self._target_value = 0.0
+        self._text  = "--"
+        self._phase = random.uniform(0, _TWOPI)
+        self.setFixedHeight(64)
+        self.setMinimumWidth(150)
+        # NOTE: no QGraphicsDropShadowEffect here — this widget repaints at
+        # ~20fps and a permanent graphics effect forces Qt to re-render the
+        # whole subtree offscreen every frame, flooding stderr with
+        # "QPainter::begin: A paint device can only be painted by one painter
+        # at a time." The card's own painted glass body carries the look.
+
+        self._anim = QPropertyAnimation(self, b"value", self)
+        self._anim.setDuration(480)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+        t = QTimer(self)
+        t.timeout.connect(self.update)
+        t.start(50)
+
+    def getValue(self):
+        return self._value
+
+    def setValue(self, v):
+        self._value = v
+        self.update()
+
+    value = pyqtProperty(float, getValue, setValue)
+
+    def set_value(self, pct: float, text: str):
+        self._target_value = max(0.0, min(100.0, pct))
+        self._text  = text
+        self._anim.stop()
+        self._anim.setStartValue(self._value)
+        self._anim.setEndValue(self._target_value)
+        self._anim.start()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        W, H = self.width(), self.height()
+
+        # Glass body
+        rect = QRectF(1, 1, W - 2, H - 2)
+        card_grad = QLinearGradient(0, 0, 0, H)
+        card_grad.setColorAt(0, qcol(C.PANEL_GLASS, 205))
+        card_grad.setColorAt(1, qcol(C.PANEL, 225))
+        p.setBrush(card_grad)
+        p.setPen(QPen(qcol(C.BORDER_L, 90), 1))
+        p.drawRoundedRect(rect, 12, 12)
+
+        # Diamond-cut corner facets
+        cn = 7.0
+        corners = [(1, 1), (W - 1, 1), (1, H - 1), (W - 1, H - 1)]
+        p.setPen(QPen(qcol(C.WHITE, 40), 1))
+        for cx_, cy_ in corners:
+            p.drawLine(QPointF(cx_, cy_), QPointF(cx_ + (cn if cx_ < W / 2 else -cn), cy_))
+            p.drawLine(QPointF(cx_, cy_), QPointF(cx_, cy_ + (cn if cy_ < H / 2 else -cn)))
+            p.drawLine(QPointF(cx_, cy_),
+                       QPointF(cx_ + (cn if cx_ < W / 2 else -cn) * 0.5,
+                               cy_ + (cn if cy_ < H / 2 else -cn) * 0.5))
+        # rim light on top edge
+        p.setPen(QPen(qcol(C.RIM, 50), 1))
+        p.drawLine(QPointF(8, 1), QPointF(W - 8, 1))
+
+        # Icon in a tiny gem chip
+        _draw_gem(p, 26, H / 2, 11, self._color, 235, rot=math.radians(self._phase * 30))
+        p.setFont(QFont("Segoe UI", 10))
+        p.setPen(QPen(qcol(self._color), 1))
+        p.drawText(QRectF(14, 8, 24, 20), Qt.AlignmentFlag.AlignCenter, self._icon)
+
+        # Label + value
+        p.setFont(QFont("Segoe UI", 8))
+        p.setPen(QPen(qcol(C.TEXT_M), 1))
+        p.drawText(QRectF(44, 7, 78, 14), Qt.AlignmentFlag.AlignLeft, self._label)
+
+        p.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        p.setPen(QPen(qcol(C.TEXT), 1))
+        p.drawText(QRectF(44, 19, 110, 22), Qt.AlignmentFlag.AlignLeft, self._text)
+
+        # Arc gauge — right side circle
+        gr = 17
+        gx = W - gr - 18
+        gy = H / 2
+        arc_rect = QRectF(gx - gr, gy - gr, gr * 2, gr * 2)
+
+        # track
+        track_pen = QPen(qcol(C.BORDER, 140), 3)
+        track_pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(track_pen)
+        p.drawArc(arc_rect, 90 * 16, -360 * 16)
+
+        # fill
+        if self._value > 85:
+            bar_color = C.ERROR
+        elif self._value > 65:
+            bar_color = C.WARNING
+        else:
+            bar_color = self._color
+
+        filled = max(1.0, self._value) * 3.6 * 16
+        pen = QPen(qcol(bar_color, 235), 3)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        p.drawArc(arc_rect, 90 * 16, -int(filled))
+
+        # end diamond marker
+        theta = math.radians(90 - self._value * 3.6)
+        mx = gx + gr * math.cos(theta)
+        my = gy + gr * math.sin(theta)
+        _draw_gem(p, mx, my, 4.4, bar_color, 255, rot=math.radians(-self._value * 3.6))
+        _draw_sparkle(p, mx, my, 7, C.WHITE, 60)
+
+        # center readout (percent)
+        p.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+        p.setPen(QPen(qcol(C.TEXT_D), 1))
+        p.drawText(QRectF(gx - gr, gy - 8, gr * 2, 16), Qt.AlignmentFlag.AlignCenter,
+                   f"{self._value:.0f}%")
+
+        # drifting sparkle
+        now = time.time()
+        tw = 0.5 + 0.5 * math.sin(now * 2.8 + self._phase)
+        if tw > 0.82:
+            spx = 60 + (self._phase * 40) % (W - 90)
+            spy = 8 + ((self._phase * 17) % (H - 16))
+            _draw_sparkle(p, spx, spy, 3 + 3 * tw, self._color, int(120 * tw))
+
+# ---------------------------------------------------------------------------
+# Chat
+# ---------------------------------------------------------------------------
+
+class ChatWidget(QTextEdit):
+    """Typewriter chat log with a nebula-wash background and diamond scrollbar."""
+
+    _sig = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setFont(QFont("Segoe UI", 10))
+        self.setStyleSheet(f"""
+            QTextEdit {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {qcol(C.PANEL_GLASS, 120).name(QColor.NameFormat.HexArgb)},
+                    stop:0.6 {qcol(C.PANEL, 60).name(QColor.NameFormat.HexArgb)});
+                color: {C.TEXT};
+                border: 1px solid {qcol(C.BORDER, 140).name(QColor.NameFormat.HexArgb)};
+                border-radius: 14px;
+                padding: 12px;
+                selection-background-color: {C.PRIMARY_D};
+            }}
+            QScrollBar:vertical {{
+                background: transparent;
+                width: 7px;
+                border: none;
+                margin: 4px 0;
+            }}
+            QScrollBar::handle:vertical {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {C.PRIMARY}, stop:1 {C.ACCENT});
+                border-radius: 3px;
+                min-height: 30px;
+            }}
+            QScrollBar::handle:vertical:hover {{
+                background: {C.ACCENT_L};
+            }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+                height: 0;
+            }}
+        """)
+        self._queue: list[str] = []
+        self._typing  = False
+        self._text    = ""
+        self._pos     = 0
+        self._tag     = "sys"
+        self._tmr = QTimer(self)
+        self._tmr.timeout.connect(self._step)
+        self._sig.connect(self._enqueue)
+
+    def append_log(self, text: str):
+        self._sig.emit(text)
+
+    def _enqueue(self, text: str):
+        self._queue.append(text)
+        if not self._typing:
+            self._next()
+
+    def _next(self):
+        if not self._queue:
+            self._typing = False
+            return
+        self._typing = True
+        self._text   = self._queue.pop(0)
+        self._pos    = 0
+        tl = self._text.lower()
+        if   tl.startswith("you:"):    self._tag = "you"
+        elif tl.startswith("lessan:"): self._tag = "ai"
+        elif tl.startswith("file:"):   self._tag = "file"
+        elif "err" in tl:              self._tag = "err"
+        else:                          self._tag = "sys"
+        self._tmr.start(4)
+
+    def _step(self):
+        if self._pos < len(self._text):
+            ch  = self._text[self._pos]
+            cur = self.textCursor()
+            fmt = cur.charFormat()
+
+            colors = {
+                "you":  C.WHITE,
+                "ai":   C.PRIMARY_L,
+                "err":  C.ERROR,
+                "file": C.SUCCESS,
+                "sys":  C.TEXT_D,
+            }
+            col = colors.get(self._tag, C.TEXT)
+            fmt.setForeground(QBrush(qcol(col)))
+            cur.movePosition(cur.MoveOperation.End)
+            cur.insertText(ch, fmt)
+            self.setTextCursor(cur)
+            self.ensureCursorVisible()
+            self._pos += 1
+        else:
+            self._tmr.stop()
+            cur = self.textCursor()
+            cur.movePosition(cur.MoveOperation.End)
+            cur.insertText("\n")
+            self.setTextCursor(cur)
+            self.ensureCursorVisible()
+            QTimer.singleShot(15, self._next)
+
+_FILE_ICONS = {
+    "image":   ("🖼", C.ACCENT),
+    "video":   ("🎬", C.WARNING),
+    "audio":   ("🎵", C.PRIMARY),
+    "pdf":     ("📄", C.ERROR),
+    "word":    ("📝", C.ACCENT),
+    "excel":   ("📊", C.SUCCESS),
+    "code":    ("💻", C.PRIMARY_L),
+    "archive": ("📦", C.WARNING),
+    "pptx":    ("📊", C.WARNING),
+    "text":    ("📃", C.TEXT_M),
+    "data":    ("🔧", C.ACCENT),
+    "unknown": ("📎", C.TEXT_DIM),
+}
+
+_EXT_TO_CAT = {
+    **dict.fromkeys(["jpg","jpeg","png","gif","webp","bmp","tiff","svg","ico"], "image"),
+    **dict.fromkeys(["mp4","avi","mov","mkv","wmv","flv","webm","m4v"],         "video"),
+    **dict.fromkeys(["mp3","wav","ogg","m4a","aac","flac","wma","opus"],        "audio"),
+    **dict.fromkeys(["pdf"],                                                     "pdf"),
+    **dict.fromkeys(["doc","docx"],                                              "word"),
+    **dict.fromkeys(["xls","xlsx","ods"],                                        "excel"),
+    **dict.fromkeys(["ppt","pptx"],                                              "pptx"),
+    **dict.fromkeys(["py","js","ts","jsx","tsx","html","css","java","c","cpp",
+                     "cs","go","rs","rb","php","swift","kt","sh","sql","lua"],   "code"),
+    **dict.fromkeys(["zip","rar","tar","gz","7z","bz2","xz"],                   "archive"),
+    **dict.fromkeys(["txt","md","rst","log"],                                    "text"),
+    **dict.fromkeys(["csv","tsv","json","xml"],                                  "data"),
+}
+
+def _file_category(path: Path) -> str:
+    return _EXT_TO_CAT.get(path.suffix.lower().lstrip("."), "unknown")
+
+def _fmt_size(size: int) -> str:
+    if   size < 1024:    return f"{size} B"
+    elif size < 1024**2: return f"{size/1024:.1f} KB"
+    elif size < 1024**3: return f"{size/1024**2:.1f} MB"
+    else:                return f"{size/1024**3:.1f} GB"
+
+class FileDropZone(QWidget):
+    """Gem-crystal file drop slot with rotating diamond border marks."""
+
+    file_selected = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(84)
+        self._current_file: str | None = None
+        self._hovering  = False
+        self._drag_over = False
+        self._pulse = 0.0
+        self._anim_tmr = QTimer(self)
+        self._anim_tmr.timeout.connect(self._animate)
+        self._anim_tmr.start(30)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self._canvas = _DropCanvas(self)
+        layout.addWidget(self._canvas)
+
+    def _animate(self):
+        self._pulse = (self._pulse + 0.05) % _TWOPI
+        self._canvas.update()
+
+    def dragEnterEvent(self, e: QDragEnterEvent):
+        if e.mimeData().hasUrls():
+            e.acceptProposedAction()
+            self._drag_over = True
+            self._canvas.update()
+
+    def dragLeaveEvent(self, e):
+        self._drag_over = False
+        self._canvas.update()
+
+    def dropEvent(self, e: QDropEvent):
+        self._drag_over = False
+        urls = e.mimeData().urls()
+        if urls:
+            path = urls[0].toLocalFile()
+            if Path(path).is_file():
+                self._set_file(path)
+        self._canvas.update()
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.MouseButton.LeftButton:
+            self._browse()
+
+    def enterEvent(self, e):
+        self._hovering = True
+        self._canvas.update()
+
+    def leaveEvent(self, e):
+        self._hovering = False
+        self._canvas.update()
+
+    def current_file(self) -> str | None:
+        return self._current_file
+
+    def clear_file(self):
+        self._current_file = None
+        self._canvas.update()
+
+    def _browse(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select a file for Lessan", str(Path.home()),
+            "All Files (*.*);;"
+            "Images (*.jpg *.jpeg *.png *.gif *.webp *.bmp *.svg);;"
+            "Documents (*.pdf *.docx *.txt *.md *.pptx);;"
+            "Data (*.csv *.xlsx *.json *.xml);;"
+            "Code (*.py *.js *.ts *.html *.css *.java *.cpp *.go);;"
+            "Audio (*.mp3 *.wav *.ogg *.m4a *.aac *.flac);;"
+            "Video (*.mp4 *.avi *.mov *.mkv *.wmv *.webm);;"
+            "Archives (*.zip *.rar *.tar *.gz *.7z)",
+        )
+        if path:
+            self._set_file(path)
+
+    def _set_file(self, path: str):
+        self._current_file = path
+        self._canvas.update()
+        self.file_selected.emit(path)
+
+class _DropCanvas(QWidget):
+    def __init__(self, zone: FileDropZone):
+        super().__init__(zone)
+        self._z = zone
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        z = self._z
+        W, H = self.width(), self.height()
+        pad = 4
+        rect = QRectF(pad, pad, W - pad * 2, H - pad * 2)
+
+        # Glass body
+        if z._drag_over:
+            bg_col = qcol(C.PRIMARY, 34)
+        elif z._hovering:
+            bg_col = qcol(C.CARD, 210)
+        else:
+            bg_col = qcol(C.PANEL_GLASS, 190)
+
+        p.setBrush(bg_col)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRoundedRect(rect, 12, 12)
+
+        # Border
+        if z._current_file:
+            border_col = qcol(C.SUCCESS, 210)
+        elif z._drag_over:
+            border_col = qcol(C.PRIMARY, 230)
+        elif z._hovering:
+            border_col = qcol(C.BORDER_L, 190)
+        else:
+            pulse_alpha = int(80 + 40 * math.sin(z._pulse))
+            border_col = qcol(C.BORDER_L, pulse_alpha)
+
+        p.setPen(QPen(border_col, 1.5))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawRoundedRect(rect, 12, 12)
+
+        # Diamond studs along the border
+        n = 6
+        for i in range(n):
+            f = (i + 0.5) / n
+            # top + bottom studs
+            for y_ in (pad + 3, H - pad - 3):
+                x_ = pad + f * (W - pad * 2)
+                _draw_gem(p, x_, y_, 2.6, border_col.name(), 180,
+                          rot=z._pulse * 0.4 + i)
+            # left + right studs
+            for x_ in (pad + 3, W - pad - 3):
+                y_ = pad + f * (H - pad * 2)
+                _draw_gem(p, x_, y_, 2.6, border_col.name(), 180,
+                          rot=z._pulse * 0.4 + i)
+
+        if z._current_file:
+            self._paint_file(p, W, H)
+        elif z._drag_over:
+            self._paint_drag_over(p, W, H)
+        else:
+            self._paint_idle(p, W, H, z._hovering)
+
+    def _paint_idle(self, p, W, H, hover):
+        cx, cy = W / 2, H / 2
+        col = C.PRIMARY if hover else C.TEXT_M
+
+        p.setFont(QFont("Segoe UI", 16))
+        p.setPen(QPen(qcol(col), 1))
+        p.drawText(QRectF(0, cy - 26, W, 26), Qt.AlignmentFlag.AlignCenter, "⬆")
+
+        p.setFont(QFont("Segoe UI", 9))
+        p.setPen(QPen(qcol(C.TEXT_D if not hover else C.TEXT), 1))
+        p.drawText(QRectF(0, cy + 1, W, 18), Qt.AlignmentFlag.AlignCenter,
+                   "Drop a file here — or click to browse")
+
+        if hover:
+            _draw_sparkle(p, cx, cy - 8, 10, C.ACCENT, 110)
+
+    def _paint_drag_over(self, p, W, H):
+        cx, cy = W / 2, H / 2
+        p.setFont(QFont("Segoe UI", 18))
+        p.setPen(QPen(qcol(C.PRIMARY), 1))
+        p.drawText(QRectF(0, cy - 16, W, 26), Qt.AlignmentFlag.AlignCenter,
+                   "Release to upload")
+        _draw_sparkle(p, cx, cy + 16, 14, C.PRIMARY_L, 140)
+
+    def _paint_file(self, p, W, H):
+        z = self._z
+        path = Path(z._current_file)
+        cat = _file_category(path)
+        icon, col = _FILE_ICONS.get(cat, _FILE_ICONS["unknown"])
+
+        cx, cy = W / 2, H / 2
+
+        p.setFont(QFont("Segoe UI", 20))
+        p.setPen(QPen(qcol(col), 1))
+        p.drawText(QRectF(0, cy - 30, W, 32), Qt.AlignmentFlag.AlignCenter, icon)
+
+        p.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        p.setPen(QPen(qcol(C.TEXT), 1))
+        name = path.name
+        if len(name) > 30:
+            name = name[:27] + "..."
+        p.drawText(QRectF(10, cy + 4, W - 20, 18), Qt.AlignmentFlag.AlignCenter, name)
+
+        p.setFont(QFont("Segoe UI", 8))
+        p.setPen(QPen(qcol(C.TEXT_M), 1))
+        size = _fmt_size(path.stat().st_size)
+        p.drawText(QRectF(0, cy + 20, W, 16), Qt.AlignmentFlag.AlignCenter, size)
+
+        # Remove button sparkle
+        _draw_sparkle(p, W - 20, 18, 7, C.ERROR_L, 130)
+
+class SetupOverlay(QFrame):
+    """Galaxy glassmorphism API-key setup overlay (first run)."""
+
+    setup_complete = pyqtSignal(dict)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("SetupOverlay")
+        self.setStyleSheet(f"""
+            #SetupOverlay {{
+                background: {qcol(C.BG, 230).name(QColor.NameFormat.HexArgb)};
+            }}
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        card = QFrame()
+        card.setFixedWidth(520)
+        card.setMaximumHeight(660)
+        card.setObjectName("setupCard")
+        self._card = card
+        card.setStyleSheet(f"""
+            QFrame#setupCard {{
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {C.PANEL_GLASS}, stop:1 {C.PANEL});
+                border: 1px solid {C.BORDER_L};
+                border-top: 1px solid {qcol(C.RIM, 80).name(QColor.NameFormat.HexArgb)};
+                border-radius: 26px;
+            }}
+            QLabel {{
+                background: transparent;
+                border: none;
+                color: {C.TEXT};
+            }}
+            QLineEdit {{
+                background: {C.CARD};
+                border: 1px solid {C.BORDER};
+                border-radius: 10px;
+                padding: 12px;
+                color: {C.WHITE};
+                font-size: 13px;
+            }}
+            QLineEdit:focus {{
+                border: 1px solid {C.PRIMARY};
+            }}
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {C.GRAD_START}, stop:0.5 {C.MAGENTA}, stop:1 {C.GRAD_END});
+                color: {C.WHITE};
+                border: none;
+                border-radius: 12px;
+                padding: 14px;
+                font-weight: bold;
+                font-size: 14px;
+            }}
+            QPushButton:hover {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 {C.PRIMARY_L}, stop:0.5 {C.MAGENTA}, stop:1 {C.ACCENT_L});
+            }}
+            QPushButton#ghostBtn {{
+                background: transparent;
+                color: {C.TEXT_M};
+                border: 1px solid {C.BORDER};
+                padding: 10px;
+                font-weight: normal;
+                font-size: 12px;
+            }}
+            QPushButton#ghostBtn:hover {{
+                color: {C.PRIMARY_L};
+                border-color: {C.PRIMARY};
+                background: transparent;
+            }}
+        """)
+        _apply_shadow(card, C.PRIMARY, 48)
+
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(32, 26, 32, 24)
+        card_layout.setSpacing(10)
+
+        title = QLabel("✦ Welcome to Lessan AI ✦")
+        title.setFont(QFont("Segoe UI", 21, QFont.Weight.Bold))
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(title)
+
+        subtitle = QLabel("Connect your AI providers to go online")
+        subtitle.setFont(QFont("Segoe UI", 10))
+        subtitle.setStyleSheet(f"color: {C.TEXT_M};")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card_layout.addWidget(subtitle)
+
+        card_layout.addSpacing(6)
+
+        card_layout.addWidget(QLabel("Gemini API Key"))
+        gem_row = QHBoxLayout()
+        gem_row.setSpacing(8)
+        self.gemini_input = QLineEdit()
+        self.gemini_input.setPlaceholderText("AIza...")
+        self.gemini_input.setEchoMode(QLineEdit.EchoMode.Password)
+        gem_row.addWidget(self.gemini_input)
+        gem_toggle = QPushButton("👁")
+        gem_toggle.setFixedWidth(38)
+        gem_toggle.setStyleSheet(f"""
+            QPushButton {{
+                background: {C.CARD};
+                border: 1px solid {C.BORDER};
+                border-radius: 10px;
+                color: {C.TEXT_D};
+                padding: 0;
+            }}
+            QPushButton:hover {{ border-color: {C.PRIMARY}; color: {C.PRIMARY_L}; }}
+        """)
+        gem_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        gem_toggle.clicked.connect(lambda: self._toggle_echo(self.gemini_input))
+        gem_row.addWidget(gem_toggle)
+        card_layout.addLayout(gem_row)
+        gem_link = QLabel('<a href="https://aistudio.google.com/app/apikey" style="color:#a78bfa;text-decoration:none;">Get a free Gemini API key</a>')
+        gem_link.setTextFormat(Qt.TextFormat.RichText)
+        gem_link.setOpenExternalLinks(True)
+        gem_link.setStyleSheet("font-size: 11px; color: #a78bfa;")
+        card_layout.addWidget(gem_link)
+
+        card_layout.addSpacing(10)
+
+        card_layout.addWidget(QLabel("OpenAI / OpenRouter API Key"))
+        or_row = QHBoxLayout()
+        or_row.setSpacing(8)
+        self.api_input = QLineEdit()
+        self.api_input.setPlaceholderText("sk-or-v1-...")
+        self.api_input.setEchoMode(QLineEdit.EchoMode.Password)
+        or_row.addWidget(self.api_input)
+        or_toggle = QPushButton("👁")
+        or_toggle.setFixedWidth(38)
+        or_toggle.setStyleSheet(f"""
+            QPushButton {{
+                background: {C.CARD};
+                border: 1px solid {C.BORDER};
+                border-radius: 10px;
+                color: {C.TEXT_D};
+                padding: 0;
+            }}
+            QPushButton:hover {{ border-color: {C.PRIMARY}; color: {C.PRIMARY_L}; }}
+        """)
+        or_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        or_toggle.clicked.connect(lambda: self._toggle_echo(self.api_input))
+        or_row.addWidget(or_toggle)
+        card_layout.addLayout(or_row)
+        or_link = QLabel('<a href="https://openrouter.ai/keys" style="color:#a78bfa;text-decoration:none;">Get an OpenRouter API key</a>')
+        or_link.setTextFormat(Qt.TextFormat.RichText)
+        or_link.setOpenExternalLinks(True)
+        or_link.setStyleSheet("font-size: 11px; color: #a78bfa;")
+        card_layout.addWidget(or_link)
+
+        card_layout.addSpacing(14)
+
+        self.error_label = QLabel("")
+        self.error_label.setStyleSheet(f"color: {C.ERROR_L}; font-size: 11px;")
+        self.error_label.setWordWrap(True)
+        self.error_label.hide()
+        card_layout.addWidget(self.error_label)
+
+        card_layout.addStretch()
+
+        start_btn = HoverGlowButton("Launch Lessan ✦", glow_color=C.PRIMARY, base_radius=10, hover_radius=30)
+        start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        start_btn.clicked.connect(self._on_start)
+        card_layout.addWidget(start_btn)
+
+        skip_btn = QPushButton("Continue without keys (use free OmniRoute models)")
+        skip_btn.setObjectName("ghostBtn")
+        skip_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        skip_btn.clicked.connect(self._on_skip)
+        card_layout.addWidget(skip_btn)
+
+        layout.addWidget(card)
+
+        if API_FILE.exists():
+            try:
+                with open(API_FILE, "r") as f:
+                    data = json.load(f)
+                    self.api_input.setText(data.get("openrouter_api_key", ""))
+                    self.gemini_input.setText(data.get("gemini_api_key", ""))
+            except Exception:
+                pass
+
+    def _toggle_echo(self, edit):
+        if edit.echoMode() == QLineEdit.EchoMode.Password:
+            edit.setEchoMode(QLineEdit.EchoMode.Normal)
+        else:
+            edit.setEchoMode(QLineEdit.EchoMode.Password)
+
+    def _save_config(self, gemini_key: str, or_key: str):
+        existing = {}
+        if API_FILE.exists():
+            try:
+                with open(API_FILE, "r") as f:
+                    existing = json.load(f)
+            except Exception:
+                pass
+        if gemini_key:
+            existing["gemini_api_key"] = gemini_key
+        if or_key:
+            existing["openrouter_api_key"] = or_key
+        existing.setdefault("os", _OS)
+
+        CONFIG_DIR.mkdir(exist_ok=True)
+        with open(API_FILE, "w") as f:
+            json.dump(existing, f, indent=2)
+
+        self.setup_complete.emit(existing)
+        self.hide()
+
+    def _on_start(self):
+        gemini_key = self.gemini_input.text().strip()
+        or_key     = self.api_input.text().strip()
+        if not gemini_key and not or_key:
+            self.error_label.setText("Enter at least one API key to launch, or use the skip link below.")
+            self.error_label.show()
+            return
+        self.error_label.hide()
+        self._save_config(gemini_key, or_key)
+
+    def _on_skip(self):
+        self._save_config("", "")
+
+# ---------------------------------------------------------------------------
+# Main Window
+# ---------------------------------------------------------------------------
+
+class MainWindow(QMainWindow):
+    """Galaxy Diamond Nebula Dashboard."""
+
+    user_input_submitted = pyqtSignal(str, str)  # text, file_path
+    mute_toggled = pyqtSignal(bool)
+
+    def __init__(self, face_path: str = "face.png"):
+        super().__init__()
+        self.setWindowTitle("Lessan AI")
+        self.resize(_DEFAULT_W, _DEFAULT_H)
+        self.setMinimumSize(_MIN_W, _MIN_H)
+
+        self._backdrop = GalaxyBackdrop(self)
+        self.setCentralWidget(self._backdrop)
+        self._backdrop.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+
+        main_layout = QHBoxLayout(self._backdrop)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(20)
+
+        # ---- LEFT PANEL: metrics ----
+        left_panel = QFrame()
+        left_panel.setFixedWidth(_LEFT_W)
+        left_panel.setStyleSheet(f"""
+            QFrame {{
+                background: {qcol(C.PANEL_GLASS, 190).name(QColor.NameFormat.HexArgb)};
+                border: 1px solid {qcol(C.BORDER, 200).name(QColor.NameFormat.HexArgb)};
+                border-top: 1px solid {qcol(C.RIM, 70).name(QColor.NameFormat.HexArgb)};
+                border-radius: 20px;
+            }}
+        """)
+        # No QGraphicsDropShadowEffect on these panels: they contain widgets
+        # that repaint continuously (GemMetricCard, GemTrim). A permanent
+        # graphics effect on the parent forces Qt to re-render the entire
+        # subtree offscreen every frame, flooding stderr with "QPainter::begin:
+        # A paint device can only be painted by one painter at a time."
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(15, 18, 15, 22)
+        left_layout.setSpacing(12)
+
+        logo_label = QLabel("◆ LESSAN ◆")
+        logo_label.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
+        logo_label.setStyleSheet(f"color: {C.PRIMARY_L}; border: none; background: transparent;")
+        logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        left_layout.addWidget(logo_label)
+
+        trim = GemTrim(C.PRIMARY_L, left_panel)
+        left_layout.addWidget(trim)
+        left_layout.addSpacing(6)
+
+        self.m_cpu = GemMetricCard("CPU", "💻", C.PRIMARY)
+        self.m_mem = GemMetricCard("RAM", "🧠", C.ACCENT)
+        self.m_net = GemMetricCard("NET", "🌐", C.SUCCESS)
+        self.m_gpu = GemMetricCard("GPU", "🎮", C.WARNING)
+        self.m_tmp = GemMetricCard("TMP", "🔥", C.ERROR)
+
+        left_layout.addWidget(self.m_cpu)
+        left_layout.addWidget(self.m_mem)
+        left_layout.addWidget(self.m_net)
+        left_layout.addWidget(self.m_gpu)
+        left_layout.addWidget(self.m_tmp)
+
+        left_layout.addStretch()
+
+        self.status_dot = QLabel("◆")
+        self.status_dot.setStyleSheet(f"color: {C.SUCCESS}; border: none; background: transparent;")
+        self.status_text = QLabel("System Ready")
+        self.status_text.setStyleSheet(f"color: {C.TEXT_M}; border: none; background: transparent; font-size: 10px;")
+
+        status_box = QHBoxLayout()
+        status_box.addWidget(self.status_dot)
+        status_box.addWidget(self.status_text)
+        status_box.addStretch()
+        left_layout.addLayout(status_box)
+
+        main_layout.addWidget(left_panel)
+
+        # ---- CENTER: the diamond ----
+        center_layout = QVBoxLayout()
+        center_layout.setSpacing(12)
+
+        center_header = QLabel("✦ ASTRAL REALM ✦")
+        center_header.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        center_header.setStyleSheet(f"color: {qcol(C.TEXT_DIM, 200).name(QColor.NameFormat.HexArgb)};"
+                                    "border: none; background: transparent;")
+        center_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        center_layout.addWidget(center_header)
+
+        self.hud = DiamondCanvas(str(Path(face_path) if face_path else BASE_DIR / "face.png"))
+        center_layout.addWidget(self.hud)
+
+        main_layout.addLayout(center_layout, 1)
+
+        # ---- RIGHT PANEL: chat + input ----
+        right_panel = QFrame()
+        right_panel.setFixedWidth(_RIGHT_W)
+        right_panel.setStyleSheet(f"""
+            QFrame {{
+                background: {qcol(C.PANEL_GLASS, 190).name(QColor.NameFormat.HexArgb)};
+                border: 1px solid {qcol(C.BORDER, 200).name(QColor.NameFormat.HexArgb)};
+                border-top: 1px solid {qcol(C.RIM, 70).name(QColor.NameFormat.HexArgb)};
+                border-radius: 20px;
+            }}
+        """)
+        # Same as left_panel: contains continuously-repainting children
+        # (GemTrim, FileDropZone) — no permanent graphics effect (see note
+        # above for the QPainter flood explanation).
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(0)
+
+        right_trim = GemTrim(C.ACCENT, right_panel)
+        right_trim.setFixedHeight(20)
+        right_layout.addWidget(right_trim)
+
+        chat_container = QFrame()
+        chat_container.setStyleSheet("border: none; background: transparent;")
+        chat_layout = QVBoxLayout(chat_container)
+        chat_layout.setContentsMargins(10, 8, 10, 10)
+
+        self.chat = ChatWidget()
+        chat_layout.addWidget(self.chat)
+        right_layout.addWidget(chat_container, 1)
+
+        input_container = QFrame()
+        input_container.setFixedHeight(215)
+        input_container.setStyleSheet(f"""
+            QFrame {{
+                background: {qcol(C.PANEL_GLASS, 220).name(QColor.NameFormat.HexArgb)};
+                border-top: 1px solid {qcol(C.BORDER, 220).name(QColor.NameFormat.HexArgb)};
+                border-bottom-left-radius: 20px;
+                border-bottom-right-radius: 20px;
+            }}
+        """)
+        input_layout = QVBoxLayout(input_container)
+        input_layout.setContentsMargins(14, 12, 14, 14)
+        input_layout.setSpacing(10)
+
+        self.drop_zone = FileDropZone()
+        input_layout.addWidget(self.drop_zone)
+
+        text_row = QHBoxLayout()
+        text_row.setSpacing(10)
+
+        self.input_field = QLineEdit()
+        self.input_field.setPlaceholderText("Ask Lessan anything...")
+        self.input_field.setStyleSheet(f"""
+            QLineEdit {{
+                background: {qcol(C.CARD, 230).name(QColor.NameFormat.HexArgb)};
+                border: 1px solid {C.BORDER};
+                border-radius: 20px;
+                padding: 10px 15px;
+                color: {C.WHITE};
+                font-size: 13px;
+            }}
+            QLineEdit:focus {{
+                border: 1px solid {C.PRIMARY};
+            }}
+        """)
+        self.input_field.returnPressed.connect(self._submit)
+        text_row.addWidget(self.input_field)
+
+        self.send_btn = HoverGlowButton("✦", glow_color=C.PRIMARY, base_radius=14, hover_radius=32)
+        self.send_btn.setFixedSize(40, 40)
+        self.send_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.send_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {C.GRAD_START}, stop:0.5 {C.MAGENTA}, stop:1 {C.GRAD_END});
+                color: {C.WHITE};
+                border: none;
+                border-radius: 20px;
+                font-size: 16px;
+                font-weight: bold;
+            }}
+            QPushButton:hover {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {C.PRIMARY_L}, stop:0.5 {C.MAGENTA}, stop:1 {C.ACCENT_L});
+            }}
+        """)
+        self.send_btn.clicked.connect(self._submit)
+        text_row.addWidget(self.send_btn)
+
+        input_layout.addLayout(text_row)
+
+        ctrl_row = QHBoxLayout()
+
+        self.mic_btn = HoverGlowButton("🎤", glow_color=C.SUCCESS, base_radius=0, hover_radius=26)
+        self.mic_btn.setFixedSize(36, 36)
+        self.mic_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.mic_btn.setCheckable(True)
+        self._mic_style_off = f"""
+            QPushButton {{
+                background: {C.CARD};
+                border: 1px solid {C.BORDER};
+                border-radius: 18px;
+                color: {C.TEXT_D};
+            }}
+            QPushButton:hover {{
+                color: {C.PRIMARY_L};
+                border: 1px solid {C.PRIMARY};
+            }}
+        """
+        self._mic_style_on = f"""
+            QPushButton {{
+                background: {qcol(C.ERROR, 40).name(QColor.NameFormat.HexArgb)};
+                border: 1px solid {C.ERROR};
+                border-radius: 18px;
+                color: {C.ERROR_L};
+            }}
+        """
+        self.mic_btn.setStyleSheet(self._mic_style_off)
+        self.mic_btn.toggled.connect(self._on_mic_toggled)
+        ctrl_row.addWidget(self.mic_btn)
+
+        ctrl_row.addStretch()
+
+        self.clear_btn = HoverGlowButton("Clear Chat", glow_color=C.ERROR, base_radius=0, hover_radius=18)
+        self.clear_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {C.TEXT_DIM};
+                border: none;
+                font-size: 11px;
+            }}
+            QPushButton:hover {{
+                color: {C.ERROR_L};
+            }}
+        """)
+        self.clear_btn.clicked.connect(self.chat.clear)
+        ctrl_row.addWidget(self.clear_btn)
+
+        input_layout.addLayout(ctrl_row)
+
+        right_layout.addWidget(input_container)
+        main_layout.addWidget(right_panel)
+
+        self.setup_overlay = SetupOverlay(self)
+        self.setup_overlay.hide()
+
+        self.metrics_tmr = QTimer(self)
+        self.metrics_tmr.timeout.connect(self._update_metrics)
+        self.metrics_tmr.start(2000)
+
+        QShortcut(QKeySequence("Ctrl+L"), self).activated.connect(self.chat.clear)
+        QShortcut(QKeySequence("Return"), self).activated.connect(self._submit)
+
+    def _update_metrics(self):
+        s = _metrics.snapshot()
+        self.m_cpu.set_value(s["cpu"], f"{s['cpu']:.1f}%")
+        self.m_mem.set_value(s["mem"], f"{s['mem']:.1f}%")
+        self.m_net.set_value(min(100, s["net"] * 10), f"{s['net']:.2f} MB/s")
+
+        if s["gpu"] >= 0:
+            self.m_gpu.set_value(s["gpu"], f"{s['gpu']:.1f}%")
+            self.m_gpu.show()
+        else:
+            self.m_gpu.hide()
+
+        if s["tmp"] >= 0:
+            self.m_tmp.set_value(min(100, s["tmp"]), f"{s['tmp']:.1f}°C")
+            self.m_tmp.show()
+        else:
+            self.m_tmp.hide()
+
+    def _on_mic_toggled(self, checked: bool):
+        self.mic_btn.setText("🔇" if checked else "🎤")
+        self.mic_btn.setStyleSheet(self._mic_style_on if checked else self._mic_style_off)
+        if hasattr(self, 'hud'):
+            self.hud.muted = checked
+        self.mute_toggled.emit(checked)
+
+    def _submit(self):
+        text = self.input_field.text().strip()
+        file = self.drop_zone.current_file()
+        if text or file:
+            self.user_input_submitted.emit(text, file or "")
+            if text:
+                self.chat.append_log(f"You: {text}")
+            if file:
+                self.chat.append_log(f"File: {Path(file).name}")
+            self.input_field.clear()
+            self.drop_zone.clear_file()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.setup_overlay.resize(self.size())
+        # Keep the setup card inside the window on short screens so the
+        # Launch button at the bottom is always visible. The card's internal
+        # stretch absorbs the slack; there is no scrolling needed.
+        ov = self.setup_overlay
+        if hasattr(ov, "_card") and ov.isVisible():
+            card = ov._card
+            avail = max(440, ov.height() - 32)
+            card.setMaximumHeight(avail)
+            card.setMinimumHeight(0)
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        if not getattr(self, "_entrance_played", False):
+            self._entrance_played = True
+            # Widget-level opacity (QGraphicsOpacityEffect) instead of
+            # window-level opacity: some Linux window plugins (Wayland, and
+            # X11 without a running compositor) do not support window opacity
+            # and flood stderr with "does not support setting window opacity".
+            # A graphics effect works everywhere and gives the same fade.
+            effect = QGraphicsOpacityEffect(self._backdrop)
+            self._backdrop.setGraphicsEffect(effect)
+            effect.setOpacity(0.0)
+            self._entrance_anim = QPropertyAnimation(effect, b"opacity", self)
+            self._entrance_anim.setDuration(520)
+            self._entrance_anim.setStartValue(0.0)
+            self._entrance_anim.setEndValue(1.0)
+            self._entrance_anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+            self._entrance_anim.finished.connect(
+                lambda: self._backdrop.setGraphicsEffect(None)
+            )
+            self._entrance_anim.start()
+
+    def show_setup_overlay(self):
+        ov = self.setup_overlay
+        ov.resize(self.size())
+        effect = QGraphicsOpacityEffect(ov)
+        ov.setGraphicsEffect(effect)
+        effect.setOpacity(0.0)
+        ov.show()
+        anim = QPropertyAnimation(effect, b"opacity", ov)
+        anim.setDuration(380)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        anim.start()
+        ov._entrance_anim = anim
+
+# ---------------------------------------------------------------------------
+# Public API wrapper
+# ---------------------------------------------------------------------------
+
+class LessanUI:
+    """Wrapper class for MainWindow that provides the interface expected by main.py"""
+
+    def __init__(self, face_image: str = "face.png"):
+        self._app = QApplication(sys.argv)
+        self._app.setApplicationName("Lessan AI")
+
+        self._window = MainWindow(face_path=face_image)
+        self._state = "LISTENING"
+        self.muted = False
+        self.current_file = None
+        self.on_text_command = None
+
+        self._window.user_input_submitted.connect(self._on_user_input)
+        self._window.mute_toggled.connect(self._on_mute_toggled)
+
+        if not API_FILE.exists():
+            self._window.show_setup_overlay()
+
+        self._window.show()
+
+    def _on_user_input(self, text: str, file_path: str):
+        self.current_file = file_path if file_path else None
+        if self.on_text_command and text:
+            self.on_text_command(text)
+
+    def _on_mute_toggled(self, muted: bool):
+        self.muted = muted
+
+    @property
+    def root(self):
+        return self._window
+
+    def set_state(self, state: str):
+        self._state = state
+        if hasattr(self._window, 'hud'):
+            hud = self._window.hud
+            hud.state = state
+            hud.speaking = (state == "SPEAKING")
+            hud.muted = self.muted
+        if hasattr(self._window, 'status_text'):
+            self._window.status_text.setText(state.title())
+
+    def write_log(self, message: str):
+        if hasattr(self._window, 'chat'):
+            self._window.chat.append_log(message)
+
+    def wait_for_api_key(self):
+        if API_FILE.exists():
+            try:
+                data = json.loads(API_FILE.read_text("utf-8"))
+                if data.get("gemini_api_key") or data.get("openrouter_api_key"):
+                    return
+            except Exception:
+                pass
+
+        QTimer.singleShot(0, lambda: self._window.show_setup_overlay())
+
+        done = threading.Event()
+        self._window.setup_overlay.setup_complete.connect(lambda _: done.set())
+        done.wait(timeout=3600)
+
+        if API_FILE.exists():
+            try:
+                data = json.loads(API_FILE.read_text("utf-8"))
+                if data.get("gemini_api_key") or data.get("openrouter_api_key"):
+                    return
+            except Exception:
+                pass
+        return
+
+    def run(self):
+        sys.exit(self._app.exec())
+
+def run_ui():
+    app = QApplication(sys.argv)
+    app.setApplicationName("Lessan AI")
+
+    QFontDatabase.addApplicationFont(":/fonts/inter.ttf")
+
+    window = MainWindow()
+
+    if not API_FILE.exists():
+        window.show_setup_overlay()
+
+    window.show()
+    sys.exit(app.exec())
+
+if __name__ == "__main__":
+    run_ui()

@@ -53,6 +53,35 @@ python main.py
 
 ---
 
+## ⚙️ LLM Backend & Rate Limits (Free + Fast Development)
+
+Lessan routes LLM calls through a resilient fallback chain so quota never blocks a build:
+
+1. **OmniRoute free pool** *(default)* — OpenRouter's current `:free` models, auto-rotated on
+   rate-limit (429) with per-model cooldowns. Stale/removed models (HTTP 404) are detected and
+   skipped for the rest of the process instead of being retried on every call.
+2. **Gemini fallback** — used only if the free pool is exhausted. Gemini is automatically
+   skipped for 60s after a rate-limit hit, so a quota-slammed key is never retried (and
+   failed) on every prompt.
+
+Choose the order with the `LESSAN_LLM_BACKEND` env var:
+
+| Value | Behaviour |
+|---|---|
+| `omniroute` *(default)* | Free OpenRouter pool first, Gemini last resort |
+| `auto` | Gemini first, OmniRoute fallback (previous behaviour) |
+| `gemini` | Gemini only |
+
+```bash
+LESSAN_LLM_BACKEND=auto python main.py
+```
+
+> 💡 If you see *"Rate limit reached, sir. Please try again in a moment."*, both free
+> backends are temporarily quota-exhausted. Free tiers reset per-minute / per-day — the
+> cooldown + rotation logic retries automatically, so just run the command again shortly.
+
+---
+
 ## 🐧 Kali Linux (APT Install)
 
 Lessan AI ships as a **signed apt repository** (GitHub Pages) plus a standalone `.deb`. To install with apt:

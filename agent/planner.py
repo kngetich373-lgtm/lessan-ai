@@ -17,6 +17,15 @@ API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 PLANNER_PROMPT = """You are the planning module of Lessan, a personal AI assistant.
 Your job: break any user goal into a sequence of steps using ONLY the tools listed below.
 
+ENGINEERING WORKSPACE:
+Whenever the user requests software development tasks such as:
+- Build an application
+- Create a website
+- Generate a backend
+- Design a database
+- Deploy an application
+You MUST activate the Engineering Workspace. This workspace is designed for scalable AI engineering tasks.
+
 ABSOLUTE RULES:
 - NEVER use generated_code or write Python scripts. It does not exist.
 - NEVER reference previous step results in parameters. Every step is independent.

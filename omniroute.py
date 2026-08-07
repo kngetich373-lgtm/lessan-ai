@@ -52,41 +52,39 @@ def _load_openrouter_key() -> str:
 
 # ─────────────────────────────────────────────────────────────────────
 # Free model pools (auto-rotated on rate-limit / failure)
+#
+# Verified against the OpenRouter /api/v1/models catalog on 2026-08-07 —
+# only models still served as `:free` are listed (stale ids return 404
+# and are skipped after one miss). Ordered by general capability so the
+# strongest free model answers first when no quota is hit.
 # ─────────────────────────────────────────────────────────────────────
 TEXT_MODELS: list[str] = [
-    "nvidia/nemotron-3-super-120b-a12b:free",
-    "nousresearch/hermes-3-llama-3.1-405b:free",
-    "minimax/minimax-m2.5:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "qwen/qwen3-next-80b-a3b-instruct:free",
-    "qwen/qwen3-coder:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",          # 1M ctx, strongest free tier
     "google/gemma-4-31b-it:free",
+    "openai/gpt-oss-20b:free",                         # code-savvy
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "cohere/north-mini-code:free",                     # code-savvy
     "google/gemma-4-26b-a4b-it:free",
-    "google/gemma-3-27b-it:free",
-    "arcee-ai/trinity-large-preview:free",
-    "z-ai/glm-4.5-air:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    "poolside/laguna-s-2.1:free",
     "nvidia/nemotron-3-nano-30b-a3b:free",
-    "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
-    "google/gemma-3-12b-it:free",
+    "poolside/laguna-xs-2.1:free",
     "nvidia/nemotron-nano-12b-v2-vl:free",
     "nvidia/nemotron-nano-9b-v2:free",
-    "google/gemma-3-4b-it:free",
-    "google/gemma-3n-e4b-it:free",
-    "meta-llama/llama-3.2-3b-instruct:free",
-    "google/gemma-3n-e2b-it:free",
-    "liquid/lfm-2.5-1.2b-instruct:free",
-    "liquid/lfm-2.5-1.2b-thinking:free",
+    "inclusionai/ling-3.0-tiny:free",
+    "nvidia/nemotron-3.5-content-safety:free",         # special-purpose; last resort
 ]
 
+# OpenRouter currently serves no free tier with image-input support, so
+# the vision pool reuses the best live free text models — `chat_vision`
+# stays functional for text prompts and degrades gracefully on images.
 VISION_MODELS: list[str] = [
-    "nvidia/nemotron-nano-12b-v2-vl:free",
-    "nvidia/llama-nemotron-embed-vl-1b-v2:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
     "google/gemma-4-31b-it:free",
-    "google/gemma-4-26b-a4b-it:free",
-    "google/gemma-3n-e4b-it:free",
-    "google/gemma-3n-e2b-it:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
+    "openai/gpt-oss-20b:free",
     "nvidia/nemotron-3-super-120b-a12b:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "nvidia/nemotron-nano-12b-v2-vl:free",
 ]
 
 # Models known to support image generation on OpenRouter (free tier varies)
@@ -106,13 +104,14 @@ IMAGE_POLLINATIONS_URL = "https://image.pollinations.ai/prompt/{prompt}"
 API_URL            = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MAX_TOKENS = 4096
 DEFAULT_TEMPERATURE = 0.7
-REQUEST_TIMEOUT    = 90    # seconds per request
+REQUEST_TIMEOUT    = 30    # seconds per request (free-tier models respond in a few seconds)
 MAX_RETRIES_PER_MODEL = 2  # attempts before moving to next model
 RETRY_DELAY        = 1     # seconds between retries
 RATE_LIMIT_COOLDOWN = 60   # seconds before retrying a rate-limited model
 
 _rate_limited: dict[str, float] = {}
 _global_cooldown_until: float = 0.0   # brief global pause after many 429s
+_not_found: set[str] = set()          # models that 404'd — skipped for the process lifetime
 
 
 class OmniRoute:
@@ -128,9 +127,10 @@ class OmniRoute:
 
     # ── rate-limit bookkeeping ──────────────────────────────────────
     def _is_rate_limited(self, model: str) -> bool:
-        global _global_cooldown_until
-        if time.time() < _global_cooldown_until:
-            return True
+        # Per-model cooldown only. The global pause is applied between
+        # calls (see _call_with_fallback), NOT inside the pool loop —
+        # otherwise a batch of 429s would abort rotation before models
+        # that still have quota get a chance.
         ts = _rate_limited.get(model)
         if ts is None:
             return False
@@ -154,6 +154,14 @@ class OmniRoute:
     def _clear_global_cooldown(self) -> None:
         global _global_cooldown_until
         _global_cooldown_until = 0.0
+
+    # ── dead-model bookkeeping (HTTP 404 = removed from OpenRouter) ───
+    def _is_not_found(self, model: str) -> bool:
+        return model in _not_found
+
+    def _mark_not_found(self, model: str) -> None:
+        _not_found.add(model)
+        logger.warning(f"[OmniRoute] Model no longer available: {model} — skipping")
 
     # ── core OpenRouter call ────────────────────────────────────────
     def _call_openrouter(
@@ -188,6 +196,10 @@ class OmniRoute:
 
                 if resp.status_code == 429:
                     self._mark_rate_limited(model)
+                    return None
+
+                if resp.status_code == 404:
+                    self._mark_not_found(model)
                     return None
 
                 if resp.status_code == 200:
@@ -226,8 +238,16 @@ class OmniRoute:
         temperature: float = DEFAULT_TEMPERATURE,
         response_format: Optional[dict] = None,
     ) -> str:
-        # Try the explicitly requested model first (respecting cooldown).
-        if model and not self._is_rate_limited(model):
+        # If a burst of 429s just happened, pause briefly before this call
+        # so the free pool isn't hammered back-to-back.
+        global _global_cooldown_until
+        wait = _global_cooldown_until - time.time()
+        if wait > 0:
+            time.sleep(min(wait, 5))
+
+        # Try the explicitly requested model first (respecting cooldown /
+        # dead-model skip).
+        if model and not self._is_rate_limited(model) and not self._is_not_found(model):
             result = self._call_openrouter(
                 model, messages, max_tokens, temperature, response_format
             )
@@ -242,7 +262,7 @@ class OmniRoute:
         # Rotate through the whole free pool.
         tried = set()
         for m in pool:
-            if m in tried or self._is_rate_limited(m):
+            if m in tried or self._is_rate_limited(m) or self._is_not_found(m):
                 continue
             tried.add(m)
             logger.info(f"[OmniRoute] Trying: {m}")

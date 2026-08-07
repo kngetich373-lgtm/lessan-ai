@@ -9,7 +9,7 @@ from pathlib import Path
 import sounddevice as sd
 from google import genai
 from google.genai import types
-from ui import LessanUI
+from lessan_ui import LessanUI
 from memory.memory_manager import (
     load_memory, update_memory, format_memory_for_prompt,
     should_extract_memory, extract_memory
@@ -46,6 +46,7 @@ from actions.image_generator   import generate_image
 from actions.social_manager    import social_manager
 from actions.assignment_helper import assignment_helper
 from actions.pdf_editor        import pdf_editor
+from documents.action import generate_document, list_document_types
 
 
 def get_base_dir():
@@ -65,8 +66,12 @@ CHUNK_SIZE          = 1024
 
 
 def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
+    """Return the configured Gemini API key, or "" if none is set."""
+    try:
+        with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f).get("gemini_api_key", "") or ""
+    except Exception:
+        return ""
 
 
 def _load_system_prompt() -> str:
@@ -795,6 +800,61 @@ TOOL_DECLARATIONS = [
             "required": []
         }
     },
+    {
+        "name": "generate_document",
+        "description": (
+            "Generates a professional document — research/academic proposals, "
+            "CV/resume, cover letter, business plan, technical documentation, "
+            "software requirements (SRS), software design, project/status "
+            "report, meeting minutes, user manual, API documentation, "
+            "presentation, formal letter, invoice, quotation, or general "
+            "report — with publishing-standard formatting (heading numbering, "
+            "TOC, title page, captions) and exports to DOCX, PDF, Markdown, "
+            "HTML, RTF and/or plain text. Use this when the user asks to "
+            "write/draft/create/generate a document, CV, proposal, invoice, "
+            "report, manual, minutes, etc. The type, template and formats can "
+            "be detected from the user's own words, so pass whatever is known."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "document_type": {
+                    "type": "STRING",
+                    "description": (
+                        "Document type id or alias: research_proposal, thesis, "
+                        "resume/cv, cover_letter, business_plan, "
+                        "technical_documentation, software_requirements/srs, "
+                        "software_design, project_report, meeting_minutes, "
+                        "user_manual, api_documentation, presentation, letter, "
+                        "invoice, quotation, report. Optional — detected from "
+                        "the user's words when omitted."
+                    )
+                },
+                "topic": {"type": "STRING", "description": "Subject/title of the document."},
+                "content": {"type": "STRING", "description": "User-supplied raw content to incorporate and professionally rewrite."},
+                "instructions": {"type": "STRING", "description": "Extra instructions for tone, length or details."},
+                "formats": {"type": "STRING", "description": "Comma-separated export formats: docx, pdf, md, txt, html, rtf. Defaults to docx."},
+                "template": {"type": "STRING", "description": "Template id: academic, business, software_engineering, legal, research, corporate, generic."},
+                "output_name": {"type": "STRING", "description": "Base filename (without extension) for the generated files."},
+                "author": {"type": "STRING", "description": "Author name for the title page."}
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "list_document_types",
+        "description": (
+            "Lists the professional document types (proposal, CV, report, "
+            "invoice, manual, etc.) and reusable templates the document "
+            "system supports. Use when the user asks what documents can be "
+            "generated or which templates exist."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {},
+            "required": []
+        }
+    },
 ]
 
 
@@ -809,6 +869,10 @@ class LessanLive:
         self._is_speaking   = False
         self._speaking_lock = threading.Lock()
         self.ui.on_text_command = self._on_text_command
+        
+        # Streaming state tracking for real-time text display
+        self._streaming_response = False  # Whether Lessan is currently streaming
+        self._stream_initiated   = False  # Whether "Lessan:" prefix has been written
 
         # Conversation memory: close any interrupted session from a previous
         # run (e.g. crash), then begin a fresh session for this launch.
@@ -1068,6 +1132,20 @@ class LessanLive:
                 r = await loop.run_in_executor(None, lambda: currency_converter(parameters=args, player=self.ui))
                 result = r or "Done."
 
+            elif name == "generate_document":
+                r = await loop.run_in_executor(
+                    None,
+                    lambda: generate_document(parameters=args, player=self.ui, speak=self.speak)
+                )
+                result = r or "Done."
+
+            elif name == "list_document_types":
+                r = await loop.run_in_executor(
+                    None,
+                    lambda: list_document_types(parameters=args, player=self.ui, speak=self.speak)
+                )
+                result = r or "Done."
+
             elif name == "shutdown_lessan":
                 self.ui.write_log("SYS: Shutdown requested.")
                 self.speak("Goodbye, sir.")
@@ -1162,6 +1240,16 @@ class LessanLive:
                             txt = sc.output_transcription.text.strip()
                             if txt:
                                 out_buf.append(txt)
+                                
+                                # OPTIMIZATION: Stream text incrementally to UI in real-time
+                                if not self._stream_initiated:
+                                    # First chunk: write with "Lessan:" prefix
+                                    self.ui.write_log(f"Lessan: {txt}")
+                                    self._stream_initiated = True
+                                    self._streaming_response = True
+                                else:
+                                    # Subsequent chunks: append without prefix
+                                    self.ui.append_stream_chunk(" " + txt)
 
                         if sc.input_transcription and sc.input_transcription.text:
                             txt = sc.input_transcription.text.strip()
@@ -1170,6 +1258,10 @@ class LessanLive:
 
                         if sc.turn_complete:
                             self.set_speaking(False)
+                            
+                            # Reset streaming state
+                            self._stream_initiated = False
+                            self._streaming_response = False
 
                             full_in = " ".join(in_buf).strip()
                             if full_in:
@@ -1177,8 +1269,7 @@ class LessanLive:
                             in_buf = []
 
                             full_out = " ".join(out_buf).strip()
-                            if full_out:
-                                self.ui.write_log(f"Lessan: {full_out}")
+                            # Note: full_out already displayed incrementally via streaming
                             out_buf = []
 
                             if full_in and len(full_in) > 5:
@@ -1233,8 +1324,15 @@ class LessanLive:
             stream.close()
 
     async def run(self):
+        api_key = _get_api_key()
+        if not api_key:
+            # No Gemini key configured (user skipped setup or chose OpenRouter):
+            # the standalone OmniRoute router in agent/planner & agent/error_handler
+            # still covers text commands, so exit quietly instead of crashing.
+            print("[Lessan] No Gemini API key configured (OmniRoute fallback active).")
+            return
         client = genai.Client(
-            api_key=_get_api_key(),
+            api_key=api_key,
             http_options={"api_version": "v1beta"}
         )
 

@@ -3,10 +3,8 @@
 #  /usr/bin/lessan-ai — Lessan AI launcher (Kali/Linux .deb)
 #
 #  /opt/lessan-ai is a ROOT-OWNED, read-only app bundle. The
-#  desktop user cannot write there, and memory/ + config/ are
-#  Python packages that cannot be symlinked away. So at launch
-#  we keep a writable private copy of the app in the user's
-#  data dir:
+#  desktop user cannot write there, so we keep a writable
+#  private copy of the app in the user's data dir:
 #
 #      ~/.local/share/lessan/app
 #
@@ -15,10 +13,15 @@
 #  $HOME/Lessan layout is migrated over. When the package is
 #  upgraded (VERSION stamp changes), the app code is re-synced
 #  from /opt while the user's state is preserved.
+#
+#  The Python venv and Playwright browsers are NOT kept in /opt
+#  (they were root-owned and broke first-run). They live per-user
+#  in ~/.local/share/lessan/ on first launch, so no root is ever
+#  needed at runtime. This also lets `lessan-ai` self-heal if a
+#  dependency is missing (e.g. after a partial install).
 # ============================================================
 
 APP_DIR="/opt/lessan-ai"
-VENV_PY="$APP_DIR/.venv/bin/python"
 DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}/lessan"
 RUN_DIR="$DATA_HOME/app"
 LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/lessan"
@@ -26,7 +29,22 @@ LOG="$LOG_DIR/lessan.log"
 VERSION_FILE="$APP_DIR/VERSION"
 RUN_VERSION="$RUN_DIR/.lessan-app-version"
 MIGRATED_FLAG="$DATA_HOME/.legacy_migrated"
-PW_BROWSERS="$APP_DIR/ms-playwright"
+# User-owned venv + Playwright browsers (never under root-owned /opt).
+VENV_DIR="$DATA_HOME/venv"
+VENV_PY="$VENV_DIR/bin/python"
+REQ_FILE="$RUN_DIR/requirements.txt"
+PW_BROWSERS="$DATA_HOME/ms-playwright"
+PW_INSTALLED="$VENV_DIR/.pw-browsers-ok"
+BOOTSTRAP_LOG="$LOG_DIR/lessan-bootstrap.log"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+}
+
+say() {
+    log "$*" >> "$LOG" 2>&1 || true
+    echo "$*"
+}
 
 # --- Desktop / session environment -------------------------------
 export DISPLAY="${DISPLAY:-:0}"
@@ -62,6 +80,9 @@ if [ "$NEED_SYNC" = "1" ]; then
         --exclude 'config/*.json' \
         --exclude 'memory/*.json' \
         --exclude 'reports/' \
+        --exclude '.venv/' \
+        --exclude 'ms-playwright/' \
+        --exclude 'VERSION' \
         "$APP_DIR/" "$RUN_DIR/"
     if [ -f "$VERSION_FILE" ]; then
         cp -a "$VERSION_FILE" "$RUN_VERSION"
@@ -91,6 +112,100 @@ fi
 
 mkdir -p "$RUN_DIR/config" "$RUN_DIR/memory" "$RUN_DIR/reports"
 
+# --- Ensure the user-owned venv exists and is healthy --------------
+# Install dependencies on first run, and whenever requirements.txt
+# changes (hash mismatch) or the venv is found broken. Errors are
+# logged but do NOT stop the launch attempt. Never run as root here.
+req_hash() {
+    if [ -f "$REQ_FILE" ]; then
+        cksum "$REQ_FILE" | awk '{print $1}'
+    else
+        echo "none"
+    fi
+}
+
+NEED_VENV=0
+if [ ! -x "$VENV_PY" ]; then
+    NEED_VENV=1
+elif [ ! -f "$VENV_DIR/.req-hash" ] || [ "$(cat "$VENV_DIR/.req-hash" 2>/dev/null)" != "$(req_hash)" ]; then
+    NEED_VENV=1
+else
+    # Sanity check: are the modules main.py / ui.py import at startup present?
+    "$VENV_PY" -c "import sounddevice, google.genai, PIL, psutil, PyQt6" >/dev/null 2>&1 || NEED_VENV=1
+fi
+
+if [ "$NEED_VENV" = "1" ]; then
+    (
+        exec >>"$BOOTSTRAP_LOG" 2>&1
+        log "=== Lessan venv bootstrap ==="
+        if [ ! -x "$VENV_PY" ]; then
+            log "Creating virtualenv at $VENV_DIR ..."
+            python3 -m venv "$VENV_DIR"
+            if [ ! -x "$VENV_PY" ]; then
+                python3 -m venv --without-pip "$VENV_DIR" 2>/dev/null || true
+                python3 -m ensurepip --upgrade 2>/dev/null || true
+                "$VENV_PY" -m ensurepip --upgrade 2>/dev/null || true
+            fi
+        fi
+        if [ -f "$REQ_FILE" ]; then
+            log "Installing Python requirements (this can take several minutes) ..."
+            "$VENV_PY" -m pip install --upgrade pip wheel setuptools
+            if ! "$VENV_PY" -m pip install -r "$REQ_FILE"; then
+                # Bulk install is all-or-nothing: one unresolvable package (e.g.
+                # nmap has no Python 3.13 distribution) aborts the whole run.
+                # Retry each requirement individually and skip the losers.
+                log "Bulk install failed; retrying each package individually ..."
+                while IFS= read -r req; do
+                    case "$req" in
+                        ''|\#*) continue ;;
+                        *';'*) log "Skipping env-marked requirement: $req"; continue ;;
+                    esac
+                    if "$VENV_PY" -m pip install "$req"; then
+                        log "OK: $req"
+                    else
+                        log "WARN: no compatible distribution for '$req' — skipping."
+                    fi
+                done < "$REQ_FILE"
+            fi
+        fi
+        log "Verifying core imports ..."
+        "$VENV_PY" -c "import sounddevice, google.genai, PIL, psutil, PyQt6" 2>/dev/null || {
+            log "ERROR: core imports still missing after install."
+            exit 1
+        }
+        log "Recording requirement hash ..."
+        req_hash > "$VENV_DIR/.req-hash"
+        log "=== bootstrap done ==="
+    )
+    if [ ! -x "$VENV_PY" ] || [ ! -f "$VENV_DIR/.req-hash" ]; then
+        say "WARNING: dependency setup is incomplete."
+        say "         See $BOOTSTRAP_LOG for details."
+    fi
+fi
+
+# --- Playwright browsers (per-user, installed once, NON-BLOCKING) ---
+# The Chromium download is large and can take a very long time on slow
+# links. Never block launching the app on it: kick the install off in
+# the background and launch immediately. The browser becomes available
+# when the background job finishes (stamped by $PW_INSTALLED).
+if [ -x "$VENV_PY" ] && [ ! -f "$PW_INSTALLED" ]; then
+    if pgrep -f "playwright install chromium" >/dev/null 2>&1; then
+        say "Playwright Chromium is already downloading in the background..."
+    else
+        say "Installing Playwright Chromium in the background (first run only)..."
+        (
+            if mkdir -p "$PW_BROWSERS" && PLAYWRIGHT_BROWSERS_PATH="$PW_BROWSERS" \
+                    "$VENV_PY" -m playwright install chromium >/dev/null 2>&1; then
+                touch "$PW_INSTALLED"
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] Playwright Chromium installed." >> "$LOG"
+            else
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: Playwright browser install failed; browser/WhatsApp features need:" >> "$LOG"
+                echo "         PLAYWRIGHT_BROWSERS_PATH=$PW_BROWSERS $VENV_PY -m playwright install chromium" >> "$LOG"
+            fi
+        ) >/dev/null 2>&1 &
+    fi
+fi
+
 # --- Already running? ---------------------------------------------
 if pgrep -f "$RUN_DIR/main.py" >/dev/null 2>&1; then
     echo "[lessan-ai] Already running — skipping." | tee -a "$LOG"
@@ -99,5 +214,5 @@ fi
 
 # --- Launch -------------------------------------------------------
 cd "$RUN_DIR" || exit 1
-echo "[lessan-ai] Launching Lessan ($(date '+%Y-%m-%d %H:%M:%S'))" >> "$LOG"
+say "Launching Lessan"
 exec "$VENV_PY" "$RUN_DIR/main.py" "$@"
