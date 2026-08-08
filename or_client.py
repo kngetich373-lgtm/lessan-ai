@@ -1,19 +1,35 @@
-# or_client.py — Compatibility alias for OmniRoute
+# or_client.py — Backward-compatible compatibility alias.
 #
-# All LLM routing now lives in omniroute.py. This module re-exports the
-# OmniRoute client behind the same `client` name so existing imports
-# (`from or_client import client`) keep working without changes.
+# All LLM routing now flows through the Gateway Hub
+# (``core.gateway``).  This module re-exports the new ``GatewayClient``
+# as ``client`` so that every existing import pattern in the codebase
+# continues to work unchanged:
+#
+#     from or_client import client
+#     text = client.chat(prompt, system="...")
+#
+# The ``GatewayClient`` preserves the full ``omniroute.client`` interface
+# (``chat``, ``chat_json``, ``vision``, ``image_generate``,
+# ``available_models``) and transparently falls back to the legacy
+# OmniRoute router when no gateway is configured.
+
+from core.gateway.client import GatewayClient
+from core.gateway.models import GatewayConfig, GatewayType
 
 from omniroute import (
     OmniRoute,
-    client as client,          # noqa: F401 — re-exported singleton
     TEXT_MODELS,
     VISION_MODELS,
 )
 
+client = GatewayClient()
+
 __all__ = [
-    "OmniRoute",
+    "GatewayClient",
+    "GatewayConfig",
+    "GatewayType",
     "client",
+    "OmniRoute",
     "TEXT_MODELS",
     "VISION_MODELS",
 ]
