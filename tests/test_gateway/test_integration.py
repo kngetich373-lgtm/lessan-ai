@@ -1,34 +1,27 @@
-"""Integration tests for the Gateway Hub — end-to-end with real providers.
+"""Gateway integration tests.
 
-These tests exercise the full gateway stack including real HTTP calls
-to OpenRouter/OmniRoute.  When API keys are missing or rate-limited,
-tests assert on structural properties (types, method existence) rather
-than specific response content.
+Tests marked ``live`` perform real gateway/network work and are excluded from
+normal CI. Structural tests remain safe to run without API credentials.
 """
-
-import asyncio
 
 import pytest
 
 from core.gateway.client import GatewayClient
-from core.gateway.models import GatewayStatus
 from core.gateway.adapters.factory import discover, create_adapter
 from core.gateway.adapters.openai_compatible import OpenAICompatibleAdapter
 
 
 class TestGatewayIntegration:
+    @pytest.mark.live
     def test_client_lazy_init_connects(self):
-        """After calling _ensure_initialized, gateways should connect."""
         client = GatewayClient(auto_connect=False)
         assert client._initialized is False
         client._ensure_initialized()
         assert client._initialized is True
-        gateways = client._hub.connected_gateways
-        # At least the OmniRoute gateway should be registered (it always connects)
-        assert len(gateways) >= 0
+        assert len(client._hub.connected_gateways) >= 0
 
+    @pytest.mark.live
     def test_client_chat_returns_string(self):
-        """Client.chat should always return a string (may be empty if rate-limited)."""
         client = GatewayClient()
         result = client.chat("What is 2+2?", max_tokens=5)
         assert isinstance(result, str)
@@ -36,17 +29,19 @@ class TestGatewayIntegration:
     def test_all_adapters_can_instantiate(self):
         types = discover()
         assert len(types) >= 8
-        for gt in types:
-            adapter = create_adapter(gt)
+        for gateway_type in types:
+            adapter = create_adapter(gateway_type)
             assert adapter is not None
-            assert adapter.gateway_type == gt
+            assert adapter.gateway_type == gateway_type
 
     def test_openai_compatible_adapters_share_base(self):
-        for gt in ["openai", "deepseek", "kimi", "custom_openai",
-                    "ollama", "litellm", "lmstudio", "vllm"]:
-            adapter = create_adapter(gt)
+        for gateway_type in [
+            "openai", "deepseek", "kimi", "custom_openai",
+            "ollama", "litellm", "lmstudio", "vllm",
+        ]:
+            adapter = create_adapter(gateway_type)
             assert isinstance(adapter, OpenAICompatibleAdapter), (
-                f"{gt} should inherit from OpenAICompatibleAdapter"
+                f"{gateway_type} should inherit from OpenAICompatibleAdapter"
             )
 
     def test_or_client_backward_compat(self):
@@ -67,6 +62,8 @@ class TestGatewayIntegration:
     def test_or_client_exports_gateway_client(self):
         from or_client import GatewayClient, GatewayConfig, GatewayType
         assert GatewayClient is not None
+        assert GatewayConfig is not None
+        assert GatewayType is not None
 
     def test_circuit_breaker_prevents_failing_gateway(self):
         from core.gateway.client import CircuitBreaker
