@@ -80,14 +80,50 @@ lessan-ai/
 
 ## Getting started
 
-### Requirements
+### One-command Linux installation
+
+For Kali, Ubuntu, Debian, and other Linux desktops, the repository now provides a user-local installer. It does **not** require sudo and keeps the application, Python virtual environment, and user state under `~/.local/share/lessan`.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kngetich373-lgtm/lessan-ai/stabilize/provider-routing-ui/install.sh | bash
+```
+
+Then launch:
+
+```bash
+lessan-ai
+```
+
+If `lessan-ai` is not yet in your `PATH`, open a new terminal or run:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+The installer also creates a **Lessan AI** desktop entry so it can be launched from the application menu. Linux desktop entries follow the freedesktop specification. citeturn0search0turn0search2
+
+Update an existing user-local installation with:
+
+```bash
+lessan-ai --update
+```
+
+Remove the user-local installation with:
+
+```bash
+bash uninstall.sh
+```
+
+The installer creates a dedicated Python virtual environment and installs `requirements.txt`; this follows the standard Python packaging model of isolating application dependencies rather than modifying the system Python environment. citeturn0search6
+
+### Manual development setup
+
+If you are developing Lessan rather than installing it:
 
 - Python 3.11+
 - Git
 - A supported desktop environment for the GUI
 - API credentials for whichever model providers you choose to enable
-
-### Setup
 
 ```bash
 git clone https://github.com/kngetich373-lgtm/lessan-ai.git
