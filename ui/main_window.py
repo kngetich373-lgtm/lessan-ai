@@ -1,134 +1,162 @@
-from PyQt6.QtWidgets import QMainWindow
-from ui.core.event_bus import bus
-from ui.core.state import state
+"""Primary PyQt6 shell for Lessan AI."""
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QListWidget, QMainWindow, QPushButton, QStackedWidget, QVBoxLayout, QWidget
+
+from ui.components.core_panels import ChatPanel, ContextPanel, SimpleListPanel
+from ui.components.settings_panel import SettingsPanel
 from ui.core.theme import theme
-from ui.components.panel_manager import PanelManager
-from ui.workspaces.workspace_manager import workspace_manager
 from ui.agents.agent_manager import agent_manager
-from ui.plugins.plugin_manager import plugin_manager
-from ui.components.base import DockablePanel
+from ui.workspaces.workspace_manager import workspace_manager
+
 
 class MainWindow(QMainWindow):
-    """Main application window for Lessan AI."""
-    
-    def __init__(self, face_image: str = "face.png"):
-        super().__init__()
+    NAV_ITEMS = [("Overview", "overview"), ("Agents", "agents"), ("Tasks", "tasks"), ("Models", "models"), ("Providers", "providers"), ("Plugins", "plugins"), ("Workspaces", "workspaces"), ("Settings", "settings")]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.setWindowTitle("Lessan AI")
-        self.setMinimumSize(1200, 800)
-        self.setStyleSheet(f"background: {theme.BG};")
-        
-        # Initialize managers
-        self.panel_manager = PanelManager(self)
-        self.workspace_manager = workspace_manager
-        self.agent_manager = agent_manager
-        self.plugin_manager = plugin_manager
-        
-        # Initialize panels
-        self._initialize_panels()
-        
-        # Connect event bus
-        self._connect_event_bus()
-        
-        # Initialize state
-        self._initialize_state()
-        
-        # Show workspace switcher
-        self._setup_workspace_switcher()
-        
-        # Show agent selector
-        self._setup_agent_selector()
-        
-        # Initialize plugins
-        self.plugin_manager.discover_plugins()
-        
-        # Update UI from state
-        self._update_ui_from_state()
-        
-        # Show window
-        self.show()
+        self.setMinimumSize(1000, 680)
+        self.resize(1440, 900)
+        self._build_ui()
+        self._apply_theme()
+        self._refresh_context()
+
+    def _build_ui(self):
+        root = QWidget()
+        self.setCentralWidget(root)
+        outer = QHBoxLayout(root)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        self.sidebar = QFrame()
+        self.sidebar.setObjectName("sidebar")
+        self.sidebar.setFixedWidth(218)
+        nav = QVBoxLayout(self.sidebar)
+        nav.setContentsMargins(14, 18, 14, 14)
+        brand = QLabel("LESSAN")
+        brand.setObjectName("brand")
+        nav.addWidget(brand)
+        subtitle = QLabel("AI Engineering OS")
+        subtitle.setObjectName("muted")
+        nav.addWidget(subtitle)
+        nav.addSpacing(16)
+        self.nav_list = QListWidget()
+        self.nav_list.setObjectName("navList")
+        for label, _ in self.NAV_ITEMS:
+            self.nav_list.addItem(label)
+        self.nav_list.currentRowChanged.connect(self._navigate)
+        nav.addWidget(self.nav_list, 1)
+        outer.addWidget(self.sidebar)
+
+        center = QWidget()
+        center_layout = QVBoxLayout(center)
+        center_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.setSpacing(0)
+        topbar = QFrame()
+        topbar.setObjectName("topbar")
+        top = QHBoxLayout(topbar)
+        top.setContentsMargins(16, 10, 16, 10)
+        self.page_title = QLabel("Overview")
+        self.page_title.setObjectName("topTitle")
+        top.addWidget(self.page_title)
+        top.addStretch()
+        self.connection = QLabel("● Ready")
+        self.connection.setObjectName("status")
+        top.addWidget(self.connection)
+        self.context_button = QPushButton("Context")
+        self.context_button.setCheckable(True)
+        self.context_button.setChecked(True)
+        self.context_button.clicked.connect(self._toggle_context)
+        top.addWidget(self.context_button)
+        center_layout.addWidget(topbar)
+
+        self.stack = QStackedWidget()
+        self.chat = ChatPanel()
+        self.stack.addWidget(self.chat)
+        self._pages = {"overview": self.chat}
+        for page_id, title_text, empty in [
+            ("agents", "Agents", "No agents are registered yet. Configure an agent to begin."),
+            ("tasks", "Tasks", "No tasks are running. Tasks will appear here when Lessan starts work."),
+            ("models", "Models", "No models have been discovered yet."),
+            ("providers", "Providers", "No providers are configured. Add credentials in Settings."),
+            ("plugins", "Plugins", "No plugins are currently available."),
+            ("workspaces", "Workspaces", "Create a workspace to organize engineering work."),
+        ]:
+            page = SimpleListPanel(title_text, empty)
+            self.stack.addWidget(page)
+            self._pages[page_id] = page
+        self.settings = SettingsPanel()
+        self.stack.addWidget(self.settings)
+        self._pages["settings"] = self.settings
+        center_layout.addWidget(self.stack, 1)
+        self.statusBar().showMessage("Lessan ready · No provider required for startup")
+        outer.addWidget(center, 1)
+
+        self.context_panel = QFrame()
+        self.context_panel.setObjectName("contextPanel")
+        self.context_panel.setFixedWidth(270)
+        context_layout = QVBoxLayout(self.context_panel)
+        context_layout.setContentsMargins(0, 0, 0, 0)
+        self.context = ContextPanel()
+        context_layout.addWidget(self.context)
+        outer.addWidget(self.context_panel)
+
+    def _navigate(self, row: int):
+        if row < 0 or row >= len(self.NAV_ITEMS):
+            return
+        label, page_id = self.NAV_ITEMS[row]
+        self.stack.setCurrentWidget(self._pages[page_id])
+        self.page_title.setText(label)
+
+    def _toggle_context(self, checked: bool):
+        self.context_panel.setVisible(checked)
+        self.context_button.setText("Context" if checked else "Show context")
+
+    def _refresh_context(self):
+        agent = getattr(agent_manager, "active_agent", None)
+        workspace = getattr(workspace_manager, "active_workspace", None)
+        self.context.set_value("Agent", getattr(agent, "name", "None"))
+        self.context.set_value("Task", "Idle")
+        self.context.set_value("Connection", "Ready")
+        self.context.set_value("Provider", "Not configured")
+        self.context.set_value("Model", "Auto")
+        if workspace is not None:
+            self.context.set_value("Task", f"Workspace: {workspace.name}")
+
+    def set_connection_status(self, text: str, healthy: bool = True):
+        self.connection.setText(f"● {text}")
+        self.connection.setProperty("healthy", healthy)
+        self.connection.style().unpolish(self.connection)
+        self.connection.style().polish(self.connection)
+
+    def _apply_theme(self):
+        self.setStyleSheet(f"""
+            QMainWindow, QWidget {{ background: {theme.BG}; color: {theme.TEXT}; }}
+            #sidebar {{ background: {theme.PANEL}; border-right: 1px solid {theme.BORDER}; }}
+            #topbar {{ background: {theme.PANEL}; border-bottom: 1px solid {theme.BORDER}; }}
+            #contextPanel {{ background: {theme.PANEL}; border-left: 1px solid {theme.BORDER}; }}
+            #brand {{ color: {theme.PRIMARY_L}; font-size: 20px; font-weight: 800; letter-spacing: 2px; }}
+            #topTitle {{ color: {theme.TEXT}; font-size: 17px; font-weight: 700; }}
+            #muted {{ color: {theme.TEXT_D}; }}
+            #status {{ color: {theme.SUCCESS}; font-weight: 600; }}
+            #navList {{ background: transparent; border: none; outline: none; }}
+            #navList::item {{ padding: 10px 12px; border-radius: 7px; color: {theme.TEXT_D}; }}
+            #navList::item:selected {{ background: {theme.CARD}; color: {theme.TEXT}; }}
+            QPushButton {{ background: {theme.CARD}; color: {theme.TEXT_D}; border: 1px solid {theme.BORDER}; padding: 7px 12px; border-radius: 6px; }}
+            QPushButton:hover {{ border-color: {theme.BORDER_L}; color: {theme.TEXT}; }}
+            QPushButton#primary {{ background: {theme.PRIMARY_D}; color: {theme.WHITE}; border: none; }}
+            QLineEdit, QTextEdit, QListWidget {{ background: {theme.PANEL}; border: 1px solid {theme.BORDER}; border-radius: 8px; color: {theme.TEXT}; padding: 8px; }}
+            QStatusBar {{ background: {theme.BG}; color: {theme.TEXT_D}; border-top: 1px solid {theme.BORDER}; }}
+        """)
 
     def _initialize_panels(self):
-        """Create and register all main panels."""
-        # System Stats Panel
-        self.system_panel = SystemStatsPanel()
-        self.panel_manager.register_panel("system", self.system_panel)
-        
-        # Chat Panel
-        self.chat_panel = ChatPanel()
-        self.panel_manager.register_panel("chat", self.chat_panel)
-        
-        # Astral Core Panel
-        self.astral_core = AstralCorePanel()
-        self.panel_manager.register_panel("astral_core", self.astral_core)
-        
-        # Plugin Panel
-        self.plugin_panel = PluginPanel()
-        self.panel_manager.register_panel("plugins", self.plugin_panel)
-        
-        # Workspace Panel
-        self.workspace_panel = WorkspacePanel()
-        self.panel_manager.register_panel("workspaces", self.workspace_panel)
-        
-        # Agent Panel
-        self.agent_panel = AgentPanel()
-        self.panel_manager.register_panel("agents", self.agent_panel)
-
+        return None
     def _connect_event_bus(self):
-        """Connect event bus signals to UI updates."""
-        bus.agent_state_changed.connect(self._on_agent_state_changed)
-        bus.metric_updated.connect(self._on_metric_updated)
-        bus.workspace_switched.connect(self._on_workspace_switched)
-        bus.plugin_loaded.connect(self._on_plugin_loaded)
-        bus.file_dropped.connect(self._on_file_dropped)
-
-    def _on_agent_state_changed(self, data: dict):
-        """Handle agent state changes."""
-        self.agent_panel.update_agent_status(data)
-
-    def _on_metric_updated(self, data: dict):
-        """Handle metric updates."""
-        self.system_panel.update_metrics(data)
-
-    def _on_workspace_switched(self, name: str):
-        """Handle workspace switches."""
-        self.workspace_panel.update_workspace(name)
-
-    def _on_plugin_loaded(self, name: str):
-        """Handle plugin loading."""
-        self.plugin_panel.update_plugin_list()
-
-    def _on_file_dropped(self, file_path: str):
-        """Handle file drop events."""
-        self.chat_panel.handle_file_drop(file_path)
-
+        return None
     def _initialize_state(self):
-        """Initialize state from saved data."""
-        state.update_state("metrics", {
-            "cpu": 0.0,
-            "mem": 0.0,
-            "net": 0.0,
-            "gpu": -1.0,
-            "tmp": -1.0,
-            "bat": -1.0,
-            "charging": False
-        })
-
+        return None
     def _setup_workspace_switcher(self):
-        """Create workspace switcher in status bar."""
-        workspace_menu = self.menuBar().addMenu("Workspaces")
-        for workspace in workspace_manager.list_workspaces():
-            action = workspace_menu.addAction(workspace)
-            action.triggered.connect(lambda _, n=workspace: self.workspace_manager.switch_workspace(n))
-
+        return None
     def _setup_agent_selector(self):
-        """Create agent selector in status bar."""
-        agent_menu = self.menuBar().addMenu("Agents")
-        for agent in agent_manager.agents:
-            action = agent_menu.addAction(agent.name)
-            action.triggered.connect(lambda _, n=agent.name: self.agent_manager.set_active_agent(n))
-
+        return None
     def _update_ui_from_state(self):
-        """Update UI elements from state."""
-        self.system_panel.update_metrics(state.get_state()["metrics"])
-        self.agent_panel.update_agent_list(agent_manager.agents)
-        self.workspace_panel.update_workspace_list(workspace_manager.list_workspaces())
+        self._refresh_context()

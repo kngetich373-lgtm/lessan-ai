@@ -1,17 +1,21 @@
-"""Extended capability system for task-based provider routing.
+"""Capability definitions and the central model capability registry.
 
-Defines fine-grained capabilities beyond basic ones (streaming, vision, etc.)
-to enable intelligent task-based routing.
+Capability names are provider-neutral. Provider adapters publish normalized
+model metadata here and routing consumes this registry as the authoritative
+source for model-level capability metadata.
 """
 
-from typing import Dict, List, Set
+from __future__ import annotations
 
-# Extended task-based capabilities
+import threading
+from typing import Dict, Iterable, List, Set, Tuple, Optional
+
+from core.model_router.models import ModelCapabilities, ModelInfo
+
 CAPABILITY_GENERAL_CHAT = "general_chat"
 CAPABILITY_REASONING = "reasoning"
 CAPABILITY_LONG_CONTEXT = "long_context"
 
-# Programming languages
 CAPABILITY_PYTHON = "python"
 CAPABILITY_JAVASCRIPT = "javascript"
 CAPABILITY_TYPESCRIPT = "typescript"
@@ -23,7 +27,6 @@ CAPABILITY_RUST = "rust"
 CAPABILITY_PHP = "php"
 CAPABILITY_RUBY = "ruby"
 
-# Development domains
 CAPABILITY_FRONTEND_DEV = "frontend_development"
 CAPABILITY_BACKEND_DEV = "backend_development"
 CAPABILITY_FULLSTACK_DEV = "fullstack_development"
@@ -31,7 +34,6 @@ CAPABILITY_MOBILE_DEV = "mobile_development"
 CAPABILITY_DEVOPS = "devops"
 CAPABILITY_DATABASE = "database"
 
-# Frameworks & technologies
 CAPABILITY_REACT = "react"
 CAPABILITY_VUE = "vue"
 CAPABILITY_ANGULAR = "angular"
@@ -42,7 +44,6 @@ CAPABILITY_FLASK = "flask"
 CAPABILITY_NODEJS = "nodejs"
 CAPABILITY_SPRING = "spring"
 
-# Specialized domains
 CAPABILITY_SECURITY = "security"
 CAPABILITY_DOCUMENTATION = "documentation"
 CAPABILITY_DATA_ANALYSIS = "data_analysis"
@@ -54,8 +55,6 @@ CAPABILITY_CODE_REVIEW = "code_review"
 CAPABILITY_ARCHITECTURE = "architecture"
 CAPABILITY_PERFORMANCE = "performance_optimization"
 
-
-# All known capabilities
 ALL_CAPABILITIES: Set[str] = {
     "text", "streaming", "vision", "tool_calling", "embeddings",
     "audio", "image_generation", "multilingual",
@@ -74,17 +73,9 @@ ALL_CAPABILITIES: Set[str] = {
     CAPABILITY_ARCHITECTURE, CAPABILITY_PERFORMANCE,
 }
 
-
 CAPABILITY_GROUPS: Dict[str, List[str]] = {
-    "web_frontend": [
-        CAPABILITY_FRONTEND_DEV, CAPABILITY_JAVASCRIPT, CAPABILITY_TYPESCRIPT,
-        CAPABILITY_REACT, CAPABILITY_VUE, CAPABILITY_ANGULAR,
-    ],
-    "web_backend": [
-        CAPABILITY_BACKEND_DEV, CAPABILITY_PYTHON, CAPABILITY_NODEJS,
-        CAPABILITY_JAVA, CAPABILITY_DATABASE, CAPABILITY_DJANGO,
-        CAPABILITY_FLASK, CAPABILITY_SPRING,
-    ],
+    "web_frontend": [CAPABILITY_FRONTEND_DEV, CAPABILITY_JAVASCRIPT, CAPABILITY_TYPESCRIPT, CAPABILITY_REACT, CAPABILITY_VUE, CAPABILITY_ANGULAR],
+    "web_backend": [CAPABILITY_BACKEND_DEV, CAPABILITY_PYTHON, CAPABILITY_NODEJS, CAPABILITY_JAVA, CAPABILITY_DATABASE, CAPABILITY_DJANGO, CAPABILITY_FLASK, CAPABILITY_SPRING],
     "mobile": [CAPABILITY_MOBILE_DEV, CAPABILITY_FLUTTER, CAPABILITY_REACT_NATIVE],
     "systems_programming": [CAPABILITY_CPP, CAPABILITY_RUST, CAPABILITY_GO, CAPABILITY_PERFORMANCE],
     "data_science": [CAPABILITY_PYTHON, CAPABILITY_DATA_ANALYSIS, CAPABILITY_MACHINE_LEARNING],
@@ -93,22 +84,73 @@ CAPABILITY_GROUPS: Dict[str, List[str]] = {
 
 
 def expand_capability_groups(capabilities: List[str]) -> Set[str]:
-    """Expand capability group names into individual capabilities."""
     expanded: Set[str] = set()
     for cap in capabilities:
-        if cap in CAPABILITY_GROUPS:
-            expanded.update(CAPABILITY_GROUPS[cap])
-        else:
-            expanded.add(cap)
+        expanded.update(CAPABILITY_GROUPS.get(cap, [cap]))
     return expanded
 
 
 def validate_capabilities(capabilities: List[str]) -> List[str]:
-    """Validate and normalize capability names."""
     valid = []
-    expanded = expand_capability_groups(capabilities)
-    for cap in expanded:
+    for cap in expand_capability_groups(capabilities):
         normalized = cap.lower().strip().replace("-", "_")
         if normalized in ALL_CAPABILITIES:
             valid.append(normalized)
-    return valid
+    return sorted(valid)
+
+
+class ModelCapabilityRegistry:
+    """Thread-safe authoritative model-level capability registry."""
+
+    def __init__(self) -> None:
+        self._models: Dict[Tuple[str, str], ModelInfo] = {}
+        self._lock = threading.RLock()
+
+    def register_provider(self, provider: str, models: Iterable[ModelInfo]) -> None:
+        """Replace all discovered model metadata for a provider."""
+        provider = provider.strip()
+        if not provider:
+            return
+        with self._lock:
+            for key in [key for key in self._models if key[0] == provider]:
+                del self._models[key]
+            for model in models:
+                if model.id:
+                    self._models[(provider, model.id)] = model
+
+    def register_model(self, provider: str, model: ModelInfo) -> None:
+        if provider and model.id:
+            with self._lock:
+                self._models[(provider, model.id)] = model
+
+    def remove_provider(self, provider: str) -> None:
+        with self._lock:
+            for key in [key for key in self._models if key[0] == provider]:
+                del self._models[key]
+
+    def get(self, provider: str, model: str) -> Optional[ModelInfo]:
+        with self._lock:
+            return self._models.get((provider, model))
+
+    def capabilities(self, provider: str, model: str) -> ModelCapabilities:
+        entry = self.get(provider, model)
+        return entry.capabilities or ModelCapabilities() if entry else ModelCapabilities()
+
+    def models_for_provider(self, provider: str) -> List[ModelInfo]:
+        with self._lock:
+            return [m for (name, _), m in self._models.items() if name == provider]
+
+    def providers_for_capability(self, capability: str) -> List[str]:
+        with self._lock:
+            return sorted({
+                provider for (provider, _), model in self._models.items()
+                if (model.capabilities or ModelCapabilities()).supports(capability)
+            })
+
+    def snapshot(self) -> Dict[Tuple[str, str], ModelInfo]:
+        with self._lock:
+            return dict(self._models)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._models.clear()

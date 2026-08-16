@@ -86,7 +86,6 @@ class SystemOrchestrator:
             return self.handle(request)
 
         from core.scheduler import scheduler
-
         result = OrchestrationResult(request)
 
         def run() -> None:
@@ -146,8 +145,10 @@ class SystemOrchestrator:
         return str(response)
 
     def _run_direct(self, request, workspace, agent):
+        """Delegate route selection to the router after a cheap availability guard."""
         if not self._model_router.is_available():
-            raise RuntimeError("No AI model route is available.")
+            raise RuntimeError("No AI model route is available")
+
         memory_block = self._memory_store.format_for_prompt(self._memory_store.load())
         system = f"Active workspace: {workspace}."
         if agent:
@@ -176,11 +177,9 @@ class SystemOrchestrator:
             logger.warning(f"UI notify failed: {exc}")
 
     def _publish(self, event: str, payload: Dict[str, Any]) -> None:
-        """Publish through the actual EventBus API and keep orchestration resilient."""
         try:
             self._event_bus.emit(event, payload)
         except Exception as exc:
-            # Event handlers must never take down the main request pipeline.
             logger.warning(f"Event '{event}' handler failed: {exc}")
 
 
