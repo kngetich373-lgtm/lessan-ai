@@ -1,8 +1,4 @@
-"""Unit tests for the Lessan AI system orchestrator.
-
-These tests use small in-memory fakes so orchestration behavior can be
-validated without network access, model credentials, or a GUI session.
-"""
+"""Unit tests for the Lessan AI system orchestrator."""
 
 import unittest
 
@@ -48,15 +44,11 @@ class FakeAgentSelector:
 
 
 class FakeMemory:
-    def __init__(self):
-        self.saved = []
-
     def load(self):
         return {"preference": "concise"}
 
     def save(self, update):
-        self.saved.append(update)
-        return update
+        raise AssertionError("normal responses must not be persisted automatically")
 
     def format_for_prompt(self, memory=None):
         memory = memory or {}
@@ -75,14 +67,13 @@ class FakeEventBus:
     def __init__(self):
         self.events = []
 
-    def publish(self, event, payload):
-        self.events.append((event, payload))
+    def emit(self, event, data=None, **kwargs):
+        self.events.append((event, data, kwargs))
 
 
 class SystemOrchestratorTests(unittest.TestCase):
     def make_orchestrator(self, *, available=True):
         self.router = FakeRouter(available=available)
-        self.memory = FakeMemory()
         self.notifier = FakeNotifier()
         self.events = FakeEventBus()
         return SystemOrchestrator(
@@ -90,7 +81,7 @@ class SystemOrchestratorTests(unittest.TestCase):
             workspace_selector=FakeWorkspaceSelector(),
             workflow_selector=FakeWorkflowSelector(),
             agent_selector=FakeAgentSelector(),
-            memory_store=self.memory,
+            memory_store=FakeMemory(),
             ui_notifier=self.notifier,
             event_bus_instance=self.events,
         )
@@ -100,10 +91,11 @@ class SystemOrchestratorTests(unittest.TestCase):
         result = orchestrator.handle(UserRequest(source="test", text="hello"))
 
         self.assertTrue(result.success)
+        self.assertTrue(result.done)
         self.assertEqual(result.workspace, "general")
         self.assertEqual(result.output, "response:hello")
         self.assertEqual(self.router.calls[0][0], "hello")
-        self.assertTrue(self.memory.saved)
+        self.assertIn("preference: concise", self.router.calls[0][1])
         self.assertIn("orchestrator.request_completed", [e[0] for e in self.events.events])
 
     def test_unavailable_router_returns_failure(self):
@@ -111,6 +103,7 @@ class SystemOrchestratorTests(unittest.TestCase):
         result = orchestrator.handle(UserRequest(source="test", text="hello"))
 
         self.assertFalse(result.success)
+        self.assertTrue(result.done)
         self.assertIn("No AI model route is available", result.error)
         self.assertIn("orchestrator.request_failed", [e[0] for e in self.events.events])
         self.assertEqual(self.notifier.events[-1][0], "ERROR")
@@ -122,6 +115,7 @@ class SystemOrchestratorTests(unittest.TestCase):
         )
 
         self.assertFalse(result.success)
+        self.assertTrue(result.done)
         self.assertIn("is not registered", result.error)
         self.assertEqual(self.router.calls, [])
 
