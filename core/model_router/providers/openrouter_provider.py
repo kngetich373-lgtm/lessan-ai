@@ -10,56 +10,30 @@ logger = get_logger("OpenRouterProvider")
 
 
 class OpenRouterProvider(CloudProviderBase):
-    """OpenRouter provider adapter with live model discovery."""
+    """OpenRouter provider with live discovery and OpenAI-compatible chat."""
 
     provider_name = "openrouter"
     display_name = "OpenRouter"
     api_key_env = "OPENROUTER_API_KEY"
+    api_base = "https://openrouter.ai/api/v1"
+    chat_api_style = "openai"
     priority_default = 40
     context_length_default = 131072
 
     default_models = [
-        {
-            "id": "google/gemini-2.0-flash-exp:free",
-            "name": "Gemini 2.0 Flash (Free)",
-            "streaming": True,
-            "vision": True,
-            "tool_calling": True,
-            "context_length": 131072,
-            "extra": {"free": True, "reasoning": True},
-        },
-        {
-            "id": "meta-llama/llama-3.3-70b-instruct:free",
-            "name": "Llama 3.3 70B (Free)",
-            "streaming": True,
-            "tool_calling": True,
-            "context_length": 131072,
-            "extra": {"free": True},
-        },
-        {
-            "id": "qwen/qwen-2.5-72b-instruct:free",
-            "name": "Qwen 2.5 72B (Free)",
-            "streaming": True,
-            "tool_calling": True,
-            "context_length": 131072,
-            "extra": {"free": True},
-        },
+        {"id": "google/gemini-2.0-flash-exp:free", "name": "Gemini 2.0 Flash (Free)", "streaming": True, "vision": True, "tool_calling": True, "context_length": 131072, "extra": {"free": True, "reasoning": True}},
+        {"id": "meta-llama/llama-3.3-70b-instruct:free", "name": "Llama 3.3 70B (Free)", "streaming": True, "tool_calling": True, "context_length": 131072, "extra": {"free": True}},
+        {"id": "qwen/qwen-2.5-72b-instruct:free", "name": "Qwen 2.5 72B (Free)", "streaming": True, "tool_calling": True, "context_length": 131072, "extra": {"free": True}},
     ]
 
-    default_capabilities = {
-        "streaming": True,
-        "vision": True,
-        "tool_calling": True,
-        "reasoning": True,
-    }
+    default_capabilities = {"streaming": True, "vision": True, "tool_calling": True, "reasoning": True}
+
+    def _auth_headers(self):
+        headers = super()._auth_headers()
+        headers.update({"HTTP-Referer": "https://lessan.ai", "X-Title": "Lessan AI"})
+        return headers
 
     def discover_models(self):
-        """Fetch the current OpenRouter model catalogue.
-
-        The endpoint is public, so discovery also works before an API key is
-        configured. Pricing is converted from per-token to per-million-token
-        values for Lessan's provider-neutral cost model.
-        """
         request = Request(
             "https://openrouter.ai/api/v1/models",
             headers={"Accept": "application/json"},
@@ -73,13 +47,11 @@ class OpenRouterProvider(CloudProviderBase):
             model_id = item.get("id")
             if not model_id:
                 continue
-
             architecture = item.get("architecture") or {}
             modalities = " ".join(architecture.get("input_modalities") or []).lower()
             pricing = item.get("pricing") or {}
             prompt_price = self._per_million(pricing.get("prompt"))
             completion_price = self._per_million(pricing.get("completion"))
-
             models.append({
                 "id": model_id,
                 "name": item.get("name") or model_id,
@@ -97,7 +69,6 @@ class OpenRouterProvider(CloudProviderBase):
                     "created": item.get("created"),
                 },
             })
-
         return self._models_from_data(models) or self._models_from_data(self.default_models)
 
     @staticmethod
