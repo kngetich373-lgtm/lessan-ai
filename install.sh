@@ -56,6 +56,10 @@ if [ -f "$SOURCE_DIR/requirements.txt" ]; then
     "$VENV_PY" -m pip install -r "$SOURCE_DIR/requirements.txt"
 fi
 
+# Keep the repository installer available for `lessan-ai --update`.
+cp -f "$SOURCE_DIR/install.sh" "$APP_HOME/install.sh"
+chmod 755 "$APP_HOME/install.sh"
+
 cat > "$LAUNCHER" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -64,7 +68,7 @@ SOURCE_DIR="${SOURCE_DIR}"
 VENV_PY="${VENV_DIR}/bin/python"
 
 if [ "\${1:-}" = "--update" ]; then
-    exec "\$APP_HOME/source/install.sh" "\$@"
+    exec "\$APP_HOME/install.sh"
 fi
 
 [ -x "\$VENV_PY" ] || { echo "Lessan virtualenv is missing. Run the installer again." >&2; exit 1; }
@@ -72,10 +76,6 @@ cd "\$SOURCE_DIR"
 exec "\$VENV_PY" "\$SOURCE_DIR/main.py" "\$@"
 EOF
 chmod 755 "$LAUNCHER"
-
-# Keep the repository's installer available for `lessan-ai --update`.
-cp -f "$SOURCE_DIR/install.sh" "$APP_HOME/install.sh"
-chmod 755 "$APP_HOME/install.sh"
 
 ICON="$SOURCE_DIR/packaging/usr/share/icons/hicolor/scalable/apps/lessan-ai.svg"
 ICON_PATH=""
@@ -104,7 +104,6 @@ if [ -n "$ICON_PATH" ]; then
 fi
 chmod 644 "$DESKTOP_FILE"
 
-# Make the command immediately discoverable in the current shell where possible.
 case ":${PATH}:" in
     *":$BIN_DIR:"*) ;;
     *) warn "$BIN_DIR is not currently in PATH."; warn "Add: export PATH=\"$BIN_DIR:\$PATH\"" ;;
@@ -114,7 +113,7 @@ info "Installation complete."
 echo
 echo "  Launch:        $LAUNCHER"
 echo "  Or command:   lessan-ai"
-echo "  Update:        $APP_HOME/install.sh"
+echo "  Update:        lessan-ai --update"
 echo "  App menu:      Lessan AI"
 echo
 echo "If 'lessan-ai' is not found, open a new terminal or add:"
