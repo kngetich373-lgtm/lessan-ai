@@ -1,7 +1,7 @@
 """SystemOrchestrator - central coordinator of Lessan AI."""
 
 import traceback
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from core.event_bus import event_bus
 from core.logging import get_logger
@@ -27,12 +27,7 @@ EV_REQUEST_FAILED = "orchestrator.request_failed"
 
 
 class SystemOrchestrator:
-    """Coordinates request processing across all Lessan AI subsystems.
-
-    Dependencies are injected through interfaces so the orchestrator remains
-    independent from concrete model, agent, workflow, memory, and UI
-    implementations.
-    """
+    """Coordinate request processing across Lessan's modular subsystems."""
 
     def __init__(self, model_router: ModelRouter,
                  workspace_selector: WorkspaceSelector,
@@ -56,16 +51,14 @@ class SystemOrchestrator:
         self._event_bus = event_bus_instance or event_bus
 
     def handle(self, request: UserRequest) -> OrchestrationResult:
-        """Process one incoming request synchronously and return its result."""
+        """Process one incoming request synchronously."""
         result = OrchestrationResult(request)
         self._publish(EV_REQUEST_RECEIVED, _req_payload(request, result))
         self._notify_ui("PROCESSING", {"request_id": str(request.id)})
-
         try:
             workspace = self._select_workspace(request, result)
             workflow = self._select_workflow(request, workspace, result)
             agent = self._select_agent(request, workspace, result)
-
             self._notify_ui("EXECUTING", {"request_id": str(request.id)})
             self._publish(EV_PROCESSING_STARTED, _req_payload(request, result))
 
@@ -77,11 +70,9 @@ class SystemOrchestrator:
                 output = self._run_direct(request, workspace, agent)
 
             result.complete(output)
-            self._update_memory(request.text, str(output))
             self._publish(EV_REQUEST_COMPLETED, _req_payload(request, result))
             self._notify_ui("IDLE", {"request_id": str(request.id), "success": True})
             return result
-
         except Exception as exc:
             result.fail(f"{type(exc).__name__}: {exc}")
             self._publish(EV_REQUEST_FAILED, _req_payload(request, result))
@@ -90,11 +81,7 @@ class SystemOrchestrator:
             return result
 
     def submit(self, request: UserRequest, background: bool = False) -> OrchestrationResult:
-        """Submit a request synchronously or to the shared background scheduler.
-
-        The returned result object is updated in place when a background task
-        finishes, allowing callers to retain a stable request/result handle.
-        """
+        """Process immediately or enqueue on Lessan's shared scheduler."""
         if not background:
             return self.handle(request)
 
@@ -114,10 +101,7 @@ class SystemOrchestrator:
             result.completed_at = completed.completed_at
 
         scheduler.start()
-        scheduler.add_task(
-            name=f"orchestrate:{request.id}",
-            func=run,
-        )
+        result.task_id = scheduler.add_task(name=f"orchestrate:{request.id}", func=run)
         return result
 
     def _select_workspace(self, request, result):
@@ -172,35 +156,16 @@ class SystemOrchestrator:
             system += f"\n\n{memory_block}"
         return self._model_router.complete(request.text, system=system)
 
-    def _update_memory(self, source: str, target: str) -> None:
-        # MemoryStore.save() is intended for factual updates. A normal response
-        # is not automatically treated as a durable fact, preventing accidental
-        # long-term memory pollution. Memory-specific subsystems may explicitly
-        # persist facts when appropriate.
-        self._publish(EV_MEMORY_UPDATED, {
-            "source": source,
-            "target": target,
-            "keys": [],
-            "persisted": False,
-        })
-
     def _record_history(self, exec_result: Any) -> None:
-        if self._workflow_engine is None:
-            return
         history = getattr(self._workflow_engine, "history", None)
         if history is None:
             return
         try:
             status = getattr(exec_result, "status", None)
-            if status is None:
-                return
             if status in ("completed", "succeeded", "success"):
                 history.record_completion(exec_result)
             elif status in ("failed", "error"):
-                history.record_error(
-                    exec_result,
-                    getattr(exec_result, "error", None) or "workflow failed",
-                )
+                history.record_error(exec_result, getattr(exec_result, "error", None) or "workflow failed")
         except Exception:
             logger.warning("Workflow history recording failed", exc_info=True)
 
@@ -211,10 +176,12 @@ class SystemOrchestrator:
             logger.warning(f"UI notify failed: {exc}")
 
     def _publish(self, event: str, payload: Dict[str, Any]) -> None:
+        """Publish through the actual EventBus API and keep orchestration resilient."""
         try:
-            self._event_bus.publish(event, payload)
+            self._event_bus.emit(event, payload)
         except Exception as exc:
-            logger.warning(f"Event '{event}' publish failed: {exc}")
+            # Event handlers must never take down the main request pipeline.
+            logger.warning(f"Event '{event}' handler failed: {exc}")
 
 
 def _req_payload(request: UserRequest, result: OrchestrationResult) -> Dict[str, Any]:
@@ -238,15 +205,10 @@ def _format_workflow_output(exec_result: Any, workflow: str) -> str:
     if exec_result is None:
         return f"Workflow '{workflow}' completed."
     for attr in ("output", "result"):
-        try:
-            val = getattr(exec_result, attr, None)
-            if val:
-                return str(val)
-        except Exception:
-            pass
-    try:
-        if getattr(exec_result, "status", None):
-            return f"Workflow '{workflow}' finished with status {exec_result.status}."
-    except Exception:
-        pass
+        val = getattr(exec_result, attr, None)
+        if val:
+            return str(val)
+    status = getattr(exec_result, "status", None)
+    if status:
+        return f"Workflow '{workflow}' finished with status {status}."
     return f"Workflow '{workflow}' completed."
