@@ -145,13 +145,10 @@ class SystemOrchestrator:
         return str(response)
 
     def _run_direct(self, request, workspace, agent):
-        """Delegate route selection to the router so failures stay actionable.
+        """Delegate route selection to the router after a cheap availability guard."""
+        if not self._model_router.is_available():
+            raise RuntimeError("No AI model route is available")
 
-        The previous availability pre-check converted the router's useful
-        "No provider can serve this request" error into a generic message.
-        The router already owns route availability and fallback decisions, so
-        the orchestrator should not duplicate that policy.
-        """
         memory_block = self._memory_store.format_for_prompt(self._memory_store.load())
         system = f"Active workspace: {workspace}."
         if agent:
