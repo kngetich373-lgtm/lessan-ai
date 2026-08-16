@@ -22,7 +22,9 @@ Lessan AI is an evolving AI engineering platform. This document tracks the curre
 
 ## User capabilities
 
-- 🟡 Voice — action layer exists; broader end-to-end voice UX remains under development
+- 🟡 Voice — Gemini Live voice is now configurable from Settings; broader end-to-end voice UX and provider-independent voice remain under development
+- 🟡 UI — redesigned around Nielsen's 10 usability heuristics with visible system status, explicit controls, consistent actions, recovery/help affordances, and progressive disclosure in Settings
+- 🟡 Model management — Settings can connect supported providers and discover/import their advertised models; broader runtime model switching remains under development
 - ❌ Vision — not yet a stable end-to-end subsystem
 - ✅ Engineering Workspace — implemented
 - 🟡 Automation — automation actions exist; broader autonomous planning/execution requires further hardening
@@ -45,4 +47,4 @@ The repository currently has strong foundations, but the remaining 🟡 and ❌ 
 
 ## Current priority
 
-The next priorities are integration quality, memory reliability, safe automation, API boundaries, and end-to-end tests. Vision and experimental subsystems should remain isolated until their interfaces and security boundaries are stable.
+The next priorities are integration quality, memory reliability, safe automation, API boundaries, end-to-end tests, and deeper runtime integration of imported model selections. Vision and experimental subsystems should remain isolated until their interfaces and security boundaries are stable.
