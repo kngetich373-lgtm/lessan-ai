@@ -1,59 +1,48 @@
 # Implementation Status
 
-This document provides the implementation status of various components in the Lessan AI codebase.
+Lessan AI is an evolving AI engineering platform. This document tracks the current implementation state so the repository does not claim capabilities that are not actually wired into the runtime.
 
-## Components
+## Core
 
-### Core
-- ✅ Dependency Injection: Fully implemented with `Container` class in `core/di/container.py`.
-- ✅ Event Bus: Fully implemented with `EventBus` class in `core/event_bus/bus.py`.
-- ✅ State Manager: Fully implemented with `StateStore` class in `core/state/store.py`.
-- ✅ AgentKernel: Fully implemented in `core/kernel` — lifecycle management (`start`/`shutdown`/`restart`/`destroy`), deterministic dependency resolution, background health monitoring (`KernelHealthMonitor`), event-bus + state-store integration, and idempotent DI wiring via `core/kernel/di.py`. Covered by `tests/test_kernel.py`.
+- ✅ Dependency Injection — `core/di`
+- ✅ Event Bus — `core/event_bus`
+- ✅ State Manager — `core/state`
+- ✅ AgentKernel — lifecycle, health monitoring, state/event integration, and DI wiring
+- ✅ Scheduler — background task execution, priorities, cancellation, and recurring tasks
 
-### Workspace Framework
-- ✅ Workspace Framework: Implemented with `BaseWorkspace` and predefined workspaces in `workspaces/predefined`.
+## Platform
 
-### Agent Framework
-- ✅ Agent Framework: Implemented with `BaseAgent`, `AgentManager`, and specialized agents in `agents/specialized`.
+- ✅ Workspace Framework — base and predefined workspaces
+- ✅ Agent Framework — base agent, manager, and specialized agents
+- ✅ Plugin System — manager, registry, and plugin API
+- ✅ Model Router — provider registry, capability/priority/cost routing, fallback, health monitoring, and DI/event integration
+- ✅ Workflow Engine — workflow execution
+- ✅ System Orchestrator — request lifecycle coordination across workspace, workflow, agent, model, memory, UI, and event subsystems
+- 🟡 Memory — conversation/persistent memory exists; long-term retrieval and richer memory policies remain under development
 
-### Plugin System
-- ✅ Plugin System: Implemented with `PluginManager`, `PluginRegistry`, and `PluginAPI` in `plugins`.
+## User capabilities
 
-### Model Router
-- ✅ Model Router: Fully implemented in `core/model_router` (provider registry, priority/capability/cost routing strategy, fallback, health monitoring, and DI/event-bus integration via `core/model_router/di.py`).
+- 🟡 Voice — action layer exists; broader end-to-end voice UX remains under development
+- ❌ Vision — not yet a stable end-to-end subsystem
+- ✅ Engineering Workspace — implemented
+- 🟡 Automation — automation actions exist; broader autonomous planning/execution requires further hardening
+- 🟡 Security — security scanning and intrusion-detection actions exist; production-grade policy enforcement and sandboxing remain future work
+- ❌ Public API — no stable external API contract yet
+- ❌ Astral Core — experimental/future architecture, not part of the stable runtime
 
-### Memory
-- 🟡 Memory: Partially implemented with `conversation_memory.py` and `config_manager.py` in `memory`.
+## Definition of a stable release
 
-### Workflow Engine
-- ✅ Workflow Engine: Implemented with `core/workflow/engine.py`.
+A subsystem is considered **stable** only when it has:
 
-### System Orchestrator
-- ❌ System Orchestrator: Missing implementation.
+1. a clear interface;
+2. an implementation wired into the runtime;
+3. automated tests for normal and failure paths;
+4. documented configuration and limitations;
+5. safe failure behavior;
+6. no required secrets committed to the repository.
 
-### Voice
-- 🟡 Voice: Partially implemented with `actions/voice.py`.
+The repository currently has strong foundations, but the remaining 🟡 and ❌ items mean Lessan AI should be described as an **active engineering platform**, not a fully completed autonomous operating system.
 
-### Vision
-- ❌ Vision: Missing implementation.
+## Current priority
 
-### Engineering Workspace
-- ✅ Engineering Workspace: Implemented with `workspaces/predefined/engineering_workspace.py`.
-
-### Security
-- 🟡 Security: Partially implemented with `actions/security_scanner.py` and `actions/intrusion_detection.py`.
-
-### API
-- ❌ API: Missing implementation.
-
-### Automation
-- 🟡 Automation: Partially implemented with `actions/automation_agent.py`.
-
-### Astral Core
-- ❌ Astral Core: Missing implementation.
-
----
-
-## Recommendation
-
-The next highest-priority task is to implement the **Model Router**, as it is a critical component for managing AI model providers and ensuring optimal routing based on provider capabilities, cost, and priority.
+The next priorities are integration quality, memory reliability, safe automation, API boundaries, and end-to-end tests. Vision and experimental subsystems should remain isolated until their interfaces and security boundaries are stable.
