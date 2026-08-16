@@ -1,12 +1,12 @@
 #!/bin/bash
 # build_deb.sh — Build the Lessan AI .deb for Kali/Linux
-# Usage: bash packaging/build_deb.sh -> lessan-ai_1.0.1-4_amd64.deb
+# Usage: bash packaging/build_deb.sh -> lessan-ai_1.0.1-5_amd64.deb
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKG_DIR="$ROOT_DIR/packaging"
 PAYLOAD_DIR="$PKG_DIR/opt/lessan-ai"
-DEB_NAME="lessan-ai_1.0.1-4_amd64.deb"
+DEB_NAME="lessan-ai_1.0.1-5_amd64.deb"
 DEB_PATH="$ROOT_DIR/$DEB_NAME"
 HICOLOR="$PKG_DIR/usr/share/icons/hicolor"
 ICON_SVG="$HICOLOR/scalable/apps/lessan-ai.svg"
@@ -52,7 +52,7 @@ find "$PAYLOAD_DIR/memory" -maxdepth 1 -name '*.json' -delete 2>/dev/null || tru
 find "$PAYLOAD_DIR/reports" -mindepth 1 -delete 2>/dev/null || true
 mkdir -p "$PAYLOAD_DIR/memory" "$PAYLOAD_DIR/reports"
 
-echo "1.0.1-4" > "$PAYLOAD_DIR/VERSION"
+echo "1.0.1-5" > "$PAYLOAD_DIR/VERSION"
 
 # --- 2. Normalize payload permissions -----------------------------
 echo "==> Normalizing payload permissions ..."
