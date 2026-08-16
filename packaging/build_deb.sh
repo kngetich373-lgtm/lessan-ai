@@ -1,31 +1,30 @@
 #!/bin/bash
 # build_deb.sh — Build the Lessan AI .deb for Kali/Linux
-# Usage: bash packaging/build_deb.sh -> lessan-ai_1.0.1-5_amd64.deb
+# Usage: bash packaging/build_deb.sh -> lessan-ai_1.0.1-6_amd64.deb
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKG_DIR="$ROOT_DIR/packaging"
 PAYLOAD_DIR="$PKG_DIR/opt/lessan-ai"
-DEB_NAME="lessan-ai_1.0.1-5_amd64.deb"
+DEB_NAME="lessan-ai_1.0.1-6_amd64.deb"
 DEB_PATH="$ROOT_DIR/$DEB_NAME"
 HICOLOR="$PKG_DIR/usr/share/icons/hicolor"
 ICON_SVG="$HICOLOR/scalable/apps/lessan-ai.svg"
 
 echo "==> Building $DEB_NAME"
 
-# --- 1. Stage project source into payload --------------------------
 echo "==> Staging source into $PAYLOAD_DIR ..."
 mkdir -p "$PAYLOAD_DIR"
 
-# Keep the actual runtime entrypoint and the redesigned desktop UI in
-# the package. The previous build omitted lessan_ui.py, which caused
-# installed systems to continue launching the legacy ui/main_window.py.
+# Runtime entrypoints and top-level modules.
 for item in main.py lessan_ui.py omniroute.py or_client.py requirements.txt setup.py readme.md; do
     [ -e "$ROOT_DIR/$item" ] && cp -a "$ROOT_DIR/$item" "$PAYLOAD_DIR/"
 done
 
-# Keep the modular UI package too; other subsystems still depend on it.
-for dir in actions agent core memory config scripts ui; do
+# Runtime packages. Keep this list explicit so a new import cannot silently
+# disappear from the Debian payload. In particular, documents/ is imported by
+# main.py and was previously omitted, causing ModuleNotFoundError at startup.
+for dir in actions agent core memory config scripts ui documents plugins workspaces; do
     [ -d "$ROOT_DIR/$dir" ] || continue
     mkdir -p "$PAYLOAD_DIR/$dir"
     rsync -a --delete \
@@ -52,13 +51,11 @@ find "$PAYLOAD_DIR/memory" -maxdepth 1 -name '*.json' -delete 2>/dev/null || tru
 find "$PAYLOAD_DIR/reports" -mindepth 1 -delete 2>/dev/null || true
 mkdir -p "$PAYLOAD_DIR/memory" "$PAYLOAD_DIR/reports"
 
-echo "1.0.1-5" > "$PAYLOAD_DIR/VERSION"
+echo "1.0.1-6" > "$PAYLOAD_DIR/VERSION"
 
-# --- 2. Normalize payload permissions -----------------------------
 echo "==> Normalizing payload permissions ..."
 chmod -R a+rX "$PAYLOAD_DIR"
 
-# --- 3. Icon: rasterize the SVG to PNG sizes -----------------------
 echo "==> Generating PNG icons from SVG ..."
 for size in 48 128 256; do
     outdir="$HICOLOR/${size}x${size}/apps"
@@ -78,21 +75,18 @@ if [ ! -f "$PAYLOAD_DIR/face.png" ] && [ -f "$HICOLOR/256x256/apps/lessan-ai.png
     chmod a+r "$PAYLOAD_DIR/face.png"
 fi
 
-# --- 4. Ensure executable bits ------------------------------------
 chmod 755 "$PKG_DIR/DEBIAN/postinst" "$PKG_DIR/DEBIAN/postrm"
 chmod 755 "$PKG_DIR/usr/bin/lessan-ai"
 chmod 755 "$PKG_DIR/usr/lib/systemd/system-sleep/lessan-ai-resume"
 
-# --- 5. Build the archive ------------------------------------------
 echo "==> Building .deb with dpkg-deb ..."
 rm -f "$DEB_PATH"
 dpkg-deb --build --root-owner-group "$PKG_DIR" "$DEB_PATH"
 
-# --- 6. Verify ------------------------------------------------------
 echo "==> Verifying package ..."
 dpkg-deb --info "$DEB_PATH"
-echo "---- file list (top level) ----"
-dpkg-deb --contents "$DEB_PATH" | awk '{print $NF}' | grep -E "/(opt|usr|DEBIAN)/" | grep -v "/$" | head -60
+echo "---- critical runtime files ----"
+dpkg-deb --contents "$DEB_PATH" | grep -E '/opt/lessan-ai/(main.py|lessan_ui.py|documents/action.py|documents/__init__.py|VERSION)$'
 echo ""
 echo "==> Done: $DEB_PATH"
 echo "    Install with: sudo apt install ./$(basename "$DEB_PATH")"
