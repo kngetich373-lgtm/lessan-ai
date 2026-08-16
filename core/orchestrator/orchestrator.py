@@ -27,7 +27,12 @@ EV_REQUEST_FAILED = "orchestrator.request_failed"
 
 
 class SystemOrchestrator:
-    """Coordinates request processing across all subsystems."""
+    """Coordinates request processing across all Lessan AI subsystems.
+
+    Dependencies are injected through interfaces so the orchestrator remains
+    independent from concrete model, agent, workflow, memory, and UI
+    implementations.
+    """
 
     def __init__(self, model_router: ModelRouter,
                  workspace_selector: WorkspaceSelector,
@@ -51,7 +56,7 @@ class SystemOrchestrator:
         self._event_bus = event_bus_instance or event_bus
 
     def handle(self, request: UserRequest) -> OrchestrationResult:
-        """Process a single incoming user request end-to-end."""
+        """Process one incoming request synchronously and return its result."""
         result = OrchestrationResult(request)
         self._publish(EV_REQUEST_RECEIVED, _req_payload(request, result))
         self._notify_ui("PROCESSING", {"request_id": str(request.id)})
@@ -85,11 +90,35 @@ class SystemOrchestrator:
             return result
 
     def submit(self, request: UserRequest, background: bool = False) -> OrchestrationResult:
+        """Submit a request synchronously or to the shared background scheduler.
+
+        The returned result object is updated in place when a background task
+        finishes, allowing callers to retain a stable request/result handle.
+        """
         if not background:
             return self.handle(request)
+
         from core.scheduler import scheduler
-        scheduler.submit(lambda: self.handle(request))
-        return OrchestrationResult(request)
+
+        result = OrchestrationResult(request)
+
+        def run() -> None:
+            completed = self.handle(request)
+            result.success = completed.success
+            result.output = completed.output
+            result.error = completed.error
+            result.workspace = completed.workspace
+            result.workflow = completed.workflow
+            result.agent = completed.agent
+            result.started_at = completed.started_at
+            result.completed_at = completed.completed_at
+
+        scheduler.start()
+        scheduler.add_task(
+            name=f"orchestrate:{request.id}",
+            func=run,
+        )
+        return result
 
     def _select_workspace(self, request, result):
         self._notify_ui("THINKING", {"request_id": str(request.id)})
@@ -144,15 +173,16 @@ class SystemOrchestrator:
         return self._model_router.complete(request.text, system=system)
 
     def _update_memory(self, source: str, target: str) -> None:
-        try:
-            updated = self._memory_store.save({})
-            self._publish(EV_MEMORY_UPDATED, {
-                "source": source,
-                "target": target,
-                "keys": list(updated.keys()) if isinstance(updated, dict) else [],
-            })
-        except Exception as exc:
-            logger.warning(f"Memory update skipped: {exc}")
+        # MemoryStore.save() is intended for factual updates. A normal response
+        # is not automatically treated as a durable fact, preventing accidental
+        # long-term memory pollution. Memory-specific subsystems may explicitly
+        # persist facts when appropriate.
+        self._publish(EV_MEMORY_UPDATED, {
+            "source": source,
+            "target": target,
+            "keys": [],
+            "persisted": False,
+        })
 
     def _record_history(self, exec_result: Any) -> None:
         if self._workflow_engine is None:
@@ -167,10 +197,12 @@ class SystemOrchestrator:
             if status in ("completed", "succeeded", "success"):
                 history.record_completion(exec_result)
             elif status in ("failed", "error"):
-                history.record_error(exec_result,
-                                     getattr(exec_result, "error", None) or "workflow failed")
+                history.record_error(
+                    exec_result,
+                    getattr(exec_result, "error", None) or "workflow failed",
+                )
         except Exception:
-            pass
+            logger.warning("Workflow history recording failed", exc_info=True)
 
     def _notify_ui(self, state_name: str, payload: Dict[str, Any]) -> None:
         try:
