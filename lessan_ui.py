@@ -5,7 +5,8 @@ import os
 from pathlib import Path
 
 import requests
-from PyQt6.QtCore import Qt, QKeySequence, pyqtSignal, QShortcut
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
