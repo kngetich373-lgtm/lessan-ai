@@ -1,4 +1,4 @@
-# Cross-platform core (installs everywhere)
+# Cross-platform Python dependencies
 sounddevice
 google-genai
 google-generativeai
@@ -23,12 +23,14 @@ openpyxl
 pandas
 pydub
 mutagen
-nmap
 pypdf
 pymupdf
 reportlab
 
-# Windows-only extras (auto-skipped on Kali/Linux by pip's env markers)
+# nmap is a system executable, not a portable Python dependency.
+# Kali: sudo apt install nmap
+
+# Windows-only extras (auto-skipped on Linux/Kali by pip markers)
 pygetwindow; platform_system == "Windows"
 comtypes; platform_system == "Windows"
 pycaw; platform_system == "Windows"
